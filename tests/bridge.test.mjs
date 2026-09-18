@@ -66,7 +66,7 @@ function deps(overrides = {}) {
     sync: async () => ({ plan: 'goat', live: 3, counts: { 'commandcode-goat-autosync': 3 }, diagnostics: [] }),
     usage: async () => ({ failures: [], plan: { name: 'GOAT' } }),
     search: () => ({ registered: true, enabled: false, selected: undefined, held: false }),
-    resolveKey: async () => 'cmd_test',
+    keyState: async () => ({ configured: true, source: 'credentials', envName: 'COMMANDCODE_API_KEY' }),
   }
 }
 
@@ -164,15 +164,24 @@ describe('makeBridgeRoutes', () => {
   })
 
   it('reports no key rather than failing when the credential does not resolve', async () => {
-    const routes = makeBridgeRoutes({ ...deps(), resolveKey: async () => undefined })
+    const routes = makeBridgeRoutes({ ...deps(), keyState: async () => ({ configured: false, source: 'none', envName: 'COMMANDCODE_API_KEY' }) })
+    const res = await call(routes, '/describe', request())
+    assert.equal(res.json.value.hasKey, false)
+    assert.equal(res.json.value.keySource, 'none')
+  })
+
+  it('reports no key rather than failing when resolution throws', async () => {
+    const routes = makeBridgeRoutes({ ...deps(), keyState: async () => { throw new Error('no provider') } })
     const res = await call(routes, '/describe', request())
     assert.equal(res.json.value.hasKey, false)
   })
 
-  it('reports no key rather than failing when resolution throws', async () => {
-    const routes = makeBridgeRoutes({ ...deps(), resolveKey: async () => { throw new Error('no provider') } })
-    const res = await call(routes, '/describe', request())
-    assert.equal(res.json.value.hasKey, false)
+  it('states where the key came from, so the pill cannot contradict the usage panel', async () => {
+    const environment = makeBridgeRoutes({ ...deps(), keyState: async () => ({ configured: true, source: 'environment', envName: 'MY_KEY' }) })
+    const res = await call(environment, '/describe', request())
+    assert.equal(res.json.value.hasKey, true)
+    assert.equal(res.json.value.keySource, 'environment')
+    assert.equal(res.json.value.apiKeyEnv, 'MY_KEY')
   })
 
   it('survives a deployment with no settings service at all', async () => {

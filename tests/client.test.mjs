@@ -279,6 +279,20 @@ describe('rendering', () => {
     assert.match(text, /[45]h \d+m 后重置/)
     assert.doesNotMatch(text, /\d{6,}d /)
   })
+
+  it('states where the key was found instead of contradicting the usage panel', async () => {
+    const viaEnvironment = { ...DESCRIBE, keySource: 'environment', apiKeyEnv: 'MY_KEY' }
+    const { component, face } = settingsTab(await mount({ '/describe': viaEnvironment, '/usage': USAGE }))
+    assert.match(textOf(component({ ...face })).join(' '), /密钥已配置（环境变量）/)
+  })
+
+  it('says where it looked when the key really is missing', async () => {
+    const missing = { ...DESCRIBE, hasKey: false, keySource: 'none' }
+    const { component, face } = settingsTab(await mount({ '/describe': missing, '/usage': USAGE }))
+    const text = textOf(component({ ...face })).join(' ')
+    assert.match(text, /密钥未配置/)
+    assert.match(text, /凭据库和环境变量里都没有找到 COMMANDCODE_API_KEY/)
+  })
 })
 
 describe('pure helpers', () => {
