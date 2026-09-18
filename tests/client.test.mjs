@@ -12,11 +12,22 @@ const NS = 'dsh-commandcode-goat'
  */
 function reactShim() {
   return {
-    createElement: (type, props, ...children) => ({
-      type,
-      props: props ?? {},
-      children: children.flat().filter((child) => child !== undefined && child !== null && child !== false),
-    }),
+    // React hands children to a component *through props*, so the element this
+    // produces has to carry them in both places: `props.children` for a
+    // function component to read, `children` for the renderer to walk.
+    createElement: (type, props, ...children) => {
+      const merged = { ...(props ?? {}) }
+      const given = children.flat().filter((child) => child !== undefined && child !== null && child !== false)
+      if (given.length > 0) merged.children = given.length === 1 ? given[0] : given
+      // What React renders as this element's children: the child arguments, or
+      // whatever `props.children` already carried when the element was created
+      // with none — the shape `createElement(Tag, props)` produces inside a
+      // component that merely forwards its props.
+      const kids = given.length > 0
+        ? given
+        : (merged.children === undefined ? [] : [].concat(merged.children))
+      return { type, props: merged, children: kids }
+    },
     useState: (initial) => [initial, () => {}],
     useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
   }
@@ -122,6 +133,51 @@ function textOf(node) {
 
 /** Wait for the card's initial bridge reads to settle. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+/** The `require` a factory receives: react, and the shell's controls when asked. */
+function requireFor(react, primitives) {
+  return (name) => {
+    if (name === 'react') return react
+    if (name === '@deepseek-ai/dsh-client-ui-primitives' && primitives !== undefined) return primitives
+    throw new Error(`the bundle must not require ${name}`)
+  }
+}
+
+/**
+ * A stand-in for the shell's control set. Each control renders a host element
+ * of its own tag so a test can find it and read the props it was handed.
+ */
+function primitivesShim(react) {
+  const control = (tag) => (props) => react.createElement(tag, props)
+  return {
+    Button: control('x-button'),
+    Tag: control('x-tag'),
+    Switch: control('x-switch'),
+    Input: control('x-input'),
+    Pill: control('x-pill'),
+    IconRefreshOutline16: control('x-icon-refresh'),
+    IconCordisPluginOutline14: control('x-icon-plugin'),
+    IconWarningOutline16: control('x-icon-warning'),
+  }
+}
+
+/** Every element of one host tag in a rendered tree. */
+function findAll(node, tag, found = []) {
+  if (Array.isArray(node)) {
+    for (const child of node) findAll(child, tag, found)
+    return found
+  }
+  if (node === null || node === undefined || typeof node !== 'object') return found
+  if (node.type === tag) {
+    found.push(node)
+    return found
+  }
+  if (typeof node.type === 'function') {
+    findAll(node.type(node.props), tag, found)
+    return found
+  }
+  return findAll(node.children ?? [], tag, found)
+}
 
 describe('bundle shape', () => {
   it('registers under the package name and injects only the services it uses', async () => {
@@ -292,6 +348,53 @@ describe('rendering', () => {
     const text = textOf(component({ ...face })).join(' ')
     assert.match(text, /密钥未配置/)
     assert.match(text, /凭据库和环境变量里都没有找到 COMMANDCODE_API_KEY/)
+  })
+
+  it('drives the shell\u2019s own controls when the shell serves them', async () => {
+    const { entry, react } = await loadBundle()
+    const exports = entry.factory(requireFor(react, primitivesShim(react)))
+    const { ctx, registrations } = browserContext()
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      const path = String(url).replace('/api/dsh-commandcode-goat', '')
+      const value = path === '/describe' ? { ...DESCRIBE, hasKey: false, keySource: 'none' } : USAGE
+      return { ok: true, status: 200, json: async () => ({ ok: true, value }) }
+    }
+    try {
+      exports.apply(ctx)
+      await settle()
+      const tab = registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      const tree = tab.component({ ...tab.face })
+
+      // one switch per boolean field, each carrying its own accessible name
+      const switches = findAll(tree, 'x-switch')
+      assert.equal(switches.length, 4)
+      assert.deepEqual(switches.map((node) => node.props.label).sort(), [
+        '为推理模型写入思考档位',
+        '定时自动同步',
+        '注册 commandcode_usage 工具',
+        '用本账户提供 web_search',
+      ])
+      for (const node of switches) {
+        assert.equal(typeof node.props.onChange, 'function')
+        assert.equal(typeof node.props.checked, 'boolean')
+      }
+
+      // the tier picker is a pill group with exactly the current tier active
+      const pills = findAll(tree, 'x-pill')
+      assert.deepEqual(pills.map((node) => node.props.children), ['GOAT', 'Pro', 'Max'])
+      assert.deepEqual(pills.map((node) => node.props.active === true), [true, false, false])
+
+      // the sync action is the primary button, and a missing key is a danger tag
+      const primary = findAll(tree, 'x-button').find((node) => node.props.variant === 'primary')
+      assert.ok(primary, 'the sync action is a primary button')
+      // the icon travels as a prop, not as a child, so it is asserted on the
+      // button that carries it rather than found by walking the tree
+      assert.ok(primary.props.icon !== undefined, 'and it carries an icon')
+      assert.ok(findAll(tree, 'x-tag').some((node) => node.props.tone === 'danger'))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
 
