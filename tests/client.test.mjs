@@ -311,7 +311,16 @@ describe('rendering', () => {
     account: { id: 'u1', userName: 'ada' },
     plan: { name: 'GOAT', status: 'active' },
     usage: { completedCount: 38, totalCount: 40, successRate: 0.95, totalCost: 1.25, totalTokensIn: 1000, totalTokensOut: 20, totalCredits: 0.014761747, totalMonthlyCredits: 0.014761747, periodBasis: 'billing-period' },
-    credits: { monthlyCredits: 69.985238253, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 12, cap: 60, exceeded: false } },
+    // Both rolling windows, with distinct figures: a fixture that carried only
+    // one of them left the weekly row untested and made an ordering assertion
+    // pass for the wrong reason.
+    credits: {
+      monthlyCredits: 69.985238253,
+      purchasedCredits: 0,
+      freeCredits: 0,
+      fiveHour: { used: 12, cap: 60, exceeded: false },
+      weekly: { used: 6, cap: 60, exceeded: false },
+    },
     raw: { usage: { totalCount: 40 }, credits: { windowLimits: { fiveHour: { cap: 60 } } } },
   }
 
@@ -346,10 +355,15 @@ describe('rendering', () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
     const text = textOf(component({ ...face })).join(' ')
     assert.match(text, /月度额度/)
+    // The rolling windows lead and the monthly pool closes the group: the two
+    // that move within a day are what the reader checks first.
+    assert.ok(text.indexOf('5 小时窗口') < text.indexOf('每周窗口'))
+    assert.ok(text.indexOf('每周窗口') < text.indexOf('月度额度'))
     // the monthly pool is a remaining balance, so its share is spent/(spent+left)
     assert.match(text, /0\.02%/)
-    // a window states used/cap directly: 12 of 60
+    // each window states used/cap directly: 12 of 60, and 6 of 60
     assert.match(text, /20%/)
+    assert.match(text, /10%/)
     // the figures stay beside the percentage, at two places rather than the
     // service's full precision
     assert.match(text, /69\.99/)
