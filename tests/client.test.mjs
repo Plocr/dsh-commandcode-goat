@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { describe, it } from 'node:test'
+import { after, describe, it } from 'node:test'
+
+/**
+ * Every browser context built in this file, so the intervals a mounted card
+ * starts can be cleared once the file's tests are done — otherwise a pending
+ * timer would hold the test runner open.
+ */
+const liveContexts = []
+after(() => {
+  for (const context of liveContexts) {
+    for (const effect of [...context.effects].reverse()) effect.dispose?.()
+  }
+  liveContexts.length = 0
+})
 
 const CLIENT_PATH = new URL('../lib/client.js', import.meta.url)
 const NS = 'dsh-commandcode-goat'
@@ -113,7 +126,9 @@ function browserContext({ locale = 'zh' } = {}) {
       },
     },
   }
-  return { ctx, registrations, injectedSlots, dictionaries, effects, scopeValue }
+  const context = { ctx, registrations, injectedSlots, dictionaries, effects, scopeValue }
+  liveContexts.push(context)
+  return context
 }
 
 /**
@@ -278,6 +293,7 @@ describe('rendering', () => {
   const panelItem = (registrations) => registrations.find((entry_) => entry_.slot === 'plugins.item')
 
   const DESCRIBE = {
+    version: '0.4.0',
     plan: 'goat',
     plans: ['goat', 'pro', 'max'],
     apiKeyEnv: 'COMMANDCODE_API_KEY',
@@ -288,14 +304,14 @@ describe('rendering', () => {
       anthropic: { key: 'commandcode-goat-anthropic', created: false, models: 0 },
       responses: { key: 'commandcode-goat-responses', created: false, models: 0 },
     },
-    search: { registered: true, enabled: false, held: false },
+    search: { registered: true, enabled: false },
   }
   const USAGE = {
     failures: [],
     account: { id: 'u1', userName: 'ada' },
     plan: { name: 'GOAT', status: 'active' },
     usage: { completedCount: 38, totalCount: 40, successRate: 0.95, totalCost: 1.25, totalTokensIn: 1000, totalTokensOut: 20, periodBasis: 'billing-period' },
-    credits: { monthlyCredits: 1000, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 12, cap: 60, exceeded: false } },
+    credits: { monthlyCredits: 69.985238253, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 12, cap: 60, exceeded: false } },
     raw: { usage: { totalCount: 40 }, credits: { windowLimits: { fiveHour: { cap: 60 } } } },
   }
 
@@ -324,6 +340,37 @@ describe('rendering', () => {
     assert.match(text, /12 \/ 60/)
     assert.match(text, /用本账户提供 web_search/)
     assert.match(text, /原始响应/)
+  })
+
+  it('shows the monthly credit balance as its own labelled metric', async () => {
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    const text = textOf(component({ ...face })).join(' ')
+    assert.match(text, /月度额度/)
+    // Two places, not the service's full precision, and not buried in a
+    // three-number run-on with the two empty balances beside it.
+    assert.match(text, /69\.99/)
+    assert.doesNotMatch(text, /69\.985238253/)
+  })
+
+  it('carries its own mark and says which build is loaded', async () => {
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    const tree = component({ ...face })
+    const svg = findAll(tree, 'svg')
+    assert.equal(svg.length, 1, 'the header mark is one inline svg')
+    assert.equal(svg[0].props.viewBox, '0 0 24 24')
+    assert.match(textOf(tree).join(' '), /v0\.4\.0/)
+  })
+
+  it('warns when the host half is older than the card', async () => {
+    // The client half is re-read from disk on every page load; the host half
+    // only at boot, so this mismatch is reachable and otherwise looks exactly
+    // like "the fix did not work".
+    const stale = { ...DESCRIBE }
+    delete stale.version
+    const { component, face } = settingsTab(await mount({ '/describe': stale, '/usage': USAGE }))
+    const text = textOf(component({ ...face })).join(' ')
+    assert.match(text, /宿主半侧没有上报版本/)
+    assert.match(text, /v\?/)
   })
 
   it('counts a window reset down from milliseconds, not from seconds', async () => {

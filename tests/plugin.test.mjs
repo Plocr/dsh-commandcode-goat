@@ -73,15 +73,17 @@ function mockWebServer() {
 }
 
 /** The web seam, recording the provider it was handed. */
-function mockWeb(initial = {}) {
-  const state = { providers: [], disposed: 0, ...initial }
-  return {
+function mockWeb({ selected } = {}) {
+  const state = { providers: [], disposed: 0 }
+  const web = {
     state,
     registerSearchProvider(provider) {
       state.providers.push(provider)
       return () => { state.disposed += 1 }
     },
   }
+  if (selected !== undefined) web.searchProviderId = selected
+  return web
 }
 
 /** The tool registry, recording definitions. */
@@ -221,6 +223,15 @@ describe('apply', () => {
     apply(ctx, Config({ webSearch: false }))
     assert.equal('searchProviderId' in web, false)
     assert.equal(web.state.providers[0].available(), false)
+  })
+
+  it('takes the search seat when the toggle is on, even over a named provider', () => {
+    const web = mockWeb({ selected: 'deepseek-official' })
+    const { ctx, effects } = mockContext({ settings: mockSettings(), web })
+    apply(ctx, Config({ webSearch: true }))
+    assert.equal(web.searchProviderId, 'commandcode')
+    for (const effect of [...effects].reverse()) effect.dispose?.()
+    assert.equal(web.searchProviderId, 'deepseek-official', 'and hands it back on unload')
   })
 
   it('releases the web provider and the selection when the fiber unloads', () => {

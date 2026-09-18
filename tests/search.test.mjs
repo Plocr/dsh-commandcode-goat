@@ -189,6 +189,18 @@ describe('makeSelectionController', () => {
     assert.equal('searchProviderId' in web, false, 'the field is removed, not set to undefined')
   })
 
+  it('displaces a provider the deployment named, then restores it', () => {
+    // The toggle is the user asking for this account's search. Leaving an
+    // earlier selection in place would make the switch do nothing, which is
+    // what a "respect the explicit config" reading of the same state gave.
+    const web = { searchProviderId: 'deepseek-official' }
+    const select = makeSelectionController(web)
+    assert.equal(select(true), 'taken')
+    assert.equal(web.searchProviderId, SEARCH_PROVIDER_ID)
+    assert.equal(select(false), 'released')
+    assert.equal(web.searchProviderId, 'deepseek-official')
+  })
+
   it('is idempotent while it already owns the selection', () => {
     const web = { searchProviderId: SEARCH_PROVIDER_ID }
     const select = makeSelectionController(web)
@@ -198,33 +210,19 @@ describe('makeSelectionController', () => {
     assert.equal('searchProviderId' in web, false)
   })
 
-  it('restores the selection it displaced', () => {
+  it('does not clobber a selection changed while it held the seat', () => {
     const web = {}
     const select = makeSelectionController(web)
     select(true)
-    web.searchProviderId = SEARCH_PROVIDER_ID
-    web.searchProviderId = undefined
-    delete web.searchProviderId
-    // A deployment that set one after we claimed it, then released ours.
+    web.searchProviderId = 'changed-underneath'
     assert.equal(select(false), 'released')
+    assert.equal(web.searchProviderId, 'changed-underneath')
   })
 
-  it('refuses to displace a provider the deployment named explicitly', () => {
-    const web = { searchProviderId: 'deepseek-official' }
-    const select = makeSelectionController(web)
-    assert.equal(select(true), 'held')
-    assert.equal(web.searchProviderId, 'deepseek-official')
-    assert.equal(select(false), 'held')
-    assert.equal(web.searchProviderId, 'deepseek-official')
-  })
-
-  it('releases rather than reporting held once it never took the selection', () => {
+  it('releasing a seat it never took is a no-op', () => {
     const web = { searchProviderId: 'other' }
     const select = makeSelectionController(web)
-    assert.equal(select(true), 'held')
-    // Disabling after the deployment switched to its own provider again.
-    web.searchProviderId = 'third'
-    assert.equal(select(false), 'held')
-    assert.equal(web.searchProviderId, 'third')
+    assert.equal(select(false), 'released')
+    assert.equal(web.searchProviderId, 'other')
   })
 })

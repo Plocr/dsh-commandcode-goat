@@ -81,7 +81,7 @@ dsh plugin --profile web add link:<本仓库根目录>
 
 原版 dsh 的 `web_search` 由 DeepSeek 的 Messages API 提供，需要**另一把** `DEEPSEEK_API_KEY`。开启本插件的开关后，搜索改由 Command Code 的 `/alpha/web-search` 提供——同一把账户密钥，一个订阅同时覆盖聊天和搜索。
 
-一个例外值得说明：如果部署已经在 `cordis.yml` 里（或通过 `$DSH_WEB_SEARCH_PROVIDER`）显式指定了搜索供应商，本插件**不会抢占**，卡片会提示选择权被别的供应商持有。这是对参考实现的有意偏离——静默覆盖一个显式配置会让部署决定变得不可达。
+开关的语义是**直接接管**：打开就用本账户搜索，关掉就把原来的搜索供应商（官方那个，或你在 `cordis.yml` / `$DSH_WEB_SEARCH_PROVIDER` 里指定的那个）原样放回去。原理上搜索供应商由 `ctx.web` 的 `searchProviderId` 在每次调用时决定，且没有公开的 setter，所以插件直接写这个字段并记住被它顶掉的那个值——只在仍然持有该席位时才还原，避免把你中途改过的选择覆盖回去。
 
 ---
 
@@ -174,6 +174,9 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 **同步之后模型列表变了，但会话里看不到新模型？**
 设置文件的热重载会生效，但浏览器里的模型选择器可能需要刷新页面。
+
+**更新了插件，但界面是新的、行为还是旧的（或卡片标题旁写着 `v?`）？**
+插件有**两半**：浏览器半侧（`lib/client.js`）每次打开页面都从磁盘重新读取，宿主半侧（`lib/index.js` 等）只在启动时被 Node `import` 一次。所以 `pnpm update` 之后只刷新页面，会出现「新卡片 + 旧宿主」的混合状态——看起来就像修复没生效。卡片头部会显示宿主的版本号，宿主太旧没上报版本时直接显示 `v?` 并给出提示。这种情况**必须完全退出 DSH Desktop（含托盘）再启动**。
 
 **想改生成供应商的密钥或地址？**
 在 **设置 → 模型** 里直接改。下次同步只刷新 `models`，不会动你写过的 `apiKeyEnv`、`baseURL`、`compat`、`displayName`。反过来，如果某个路由上已经写了 `modelOverrides`，同步会拒绝并说明原因——那两者不能共存，插件不会悄悄覆盖你的配置。
