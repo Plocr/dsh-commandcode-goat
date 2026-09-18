@@ -1,6 +1,6 @@
 {
   "name": "dsh-commandcode-goat",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "DSH plugin: publish a Command Code subscription (GOAT / Pro / Max) as llm-pi-ai provider routes, with account usage and web search on the same credential.",
   "type": "module",
   "main": "lib/index.js",
