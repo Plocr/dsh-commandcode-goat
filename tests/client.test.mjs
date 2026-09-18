@@ -337,7 +337,7 @@ describe('rendering', () => {
     assert.match(text, /创建 \/ 更新/)
     assert.match(text, /账户用量/)
     assert.match(text, /ada/)
-    assert.match(text, /12 \/ 60/)
+    assert.match(text, /已用 12 \/ 上限 60/)
     assert.match(text, /用本账户提供 web_search/)
     assert.match(text, /原始响应/)
   })
@@ -354,7 +354,7 @@ describe('rendering', () => {
     // service's full precision
     assert.match(text, /69\.99/)
     assert.doesNotMatch(text, /69\.985238253/)
-    assert.match(text, /12 \/ 60/)
+    assert.match(text, /已用 12 \/ 上限 60/)
   })
 
   it('names both halves of every ratio instead of writing a bare a / b', async () => {
@@ -366,7 +366,9 @@ describe('rendering', () => {
     // The token figure states the total, and says which half is which.
     assert.match(text, /本期 Token 1\.0k/)
     assert.match(text, /输入 1\.0k · 输出 20/)
-    // No digit-joined ratio survives anywhere on the panel.
+    // No *unspaced* digit-joined ratio survives anywhere on the panel — the
+    // shape that reads as a fraction with an unnamed denominator. The window
+    // rows keep a slash, but name both of its sides.
     assert.doesNotMatch(text, /\d+\/\d+/)
   })
 
