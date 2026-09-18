@@ -175,7 +175,7 @@ describe('upsertProvider', () => {
   })
 
   it('refuses to overwrite a route the user built with modelOverrides', async () => {
-    const settings = fakeSettings({ value: { providers: { k: { modelOverrides: { 'x/y': {} } } } } })
+    const settings = fakeSettings({ value: { providers: { k: { modelOverrides: { 'x/y': { contextWindow: 1000 } } } } } })
     await assert.rejects(
       () => upsertProvider({ settings, key: 'k', profile: buildRouteProfile({ key: 'k', route: 'openai', entries: ENTRIES, plan: 'goat' }) }),
       (error) => {
@@ -186,6 +186,31 @@ describe('upsertProvider', () => {
       },
     )
     assert.equal(settings.writes.length, 0)
+  })
+
+  it('resyncs a route whose modelOverrides the settings service materialized as an empty dict', async () => {
+    // `settings.describe()` returns the section schemastery already parsed, and
+    // schemastery turns an absent dict into `{}`. Reading the *presence* of the
+    // key instead of its content made every re-sync of an existing route refuse
+    // itself with "declares modelOverrides" — on a route that declared none.
+    const settings = fakeSettings({
+      value: {
+        providers: {
+          k: {
+            api: 'openai-completions',
+            baseURL: 'https://api.commandcode.ai/provider/v1',
+            apiKeyEnv: 'COMMANDCODE_API_KEY',
+            compat: { thinkingFormat: 'openai', supportsReasoningEffort: true },
+            modelOverrides: {},
+            models: [],
+          },
+        },
+      },
+    })
+    const profile = buildRouteProfile({ key: 'k', route: 'openai', entries: ENTRIES, plan: 'goat' })
+    const result = await upsertProvider({ settings, key: 'k', profile })
+    assert.equal(result.created, false)
+    assert.deepEqual(settings.value.providers.k.models, ENTRIES)
   })
 
   it('retries once when the section moved under it', async () => {

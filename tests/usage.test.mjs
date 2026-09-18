@@ -93,10 +93,11 @@ describe('fetchUsageReport', () => {
       assert.deepEqual(report.account, { id: 'u1', name: 'Ada', userName: 'ada', orgId: 'org 1' })
       assert.equal(report.plan.name, 'Pro')
       assert.equal(report.plan.status, 'active')
-      assert.equal(report.plan.currentPeriodEnd, 1_900_000_000)
+      // An epoch is normalized to an ISO string, the form the live service sends.
+      assert.equal(report.plan.currentPeriodEnd, '2030-03-17T17:46:40.000Z')
       assert.equal(report.usage.completedCount, 38)
       assert.equal(report.usage.totalTokensIn, 1_200_000)
-      assert.deepEqual(report.credits.fiveHour, { used: 12, cap: 60, exceeded: false, resetAt: 1_800_000_000, remaining: 48 })
+      assert.deepEqual(report.credits.fiveHour, { used: 12, cap: 60, exceeded: false, resetAt: 1_800_000_000_000, remaining: 48 })
       assert.equal(report.credits.weekly.exceeded, true)
       assert.equal(report.credits.monthlyCredits, 1000)
     } finally {
@@ -214,6 +215,71 @@ describe('fetchUsageReport', () => {
     }
     assert.equal(stub.calls[0].path, '/alpha/whoami')
   })
+
+  it('reads the units the live service actually sends', async () => {
+    // Captured from https://api.commandcode.ai on 2026-09-19.
+    const resetAt = 1789766268634
+    const stub = stubFetch({
+      '/alpha/usage/summary': {
+        totalCount: 6,
+        completedCount: 6,
+        failedCount: 0,
+        successRate: 100,
+        totalCost: 0.014761747,
+        totalTokensIn: 362561,
+        totalTokensOut: 1447,
+        totalCredits: 0.014761747,
+        periodBasis: 'billing-period',
+      },
+      '/alpha/billing/credits': {
+        credits: { belowThreshold: false, creditThreshold: 0, monthlyCredits: 69.985238253, purchasedCredits: 0, freeCredits: 0 },
+        windowLimits: {
+          limited: true,
+          fiveHour: { used: 0.014761747, cap: 14, exceeded: false, resetAt },
+          weekly: { used: 0.014761747, cap: 35, exceeded: false, resetAt },
+        },
+      },
+      '/alpha/billing/subscriptions': {
+        data: { planId: 'individual-goat', status: 'active', currentPeriodEnd: '2026-10-17T04:41:14.000Z' },
+      },
+    })
+    try {
+      const report = await fetchUsageReport('key', BASE)
+      // 100 is a percentage, not a 100x fraction.
+      assert.equal(report.usage.successRate, 1)
+      // resetAt is epoch *milliseconds*; reading it as seconds is what produced
+      // a "20694172d 16h 后重置" countdown.
+      assert.equal(report.credits.fiveHour.resetAt, resetAt)
+      assert.equal(report.credits.fiveHour.cap, 14)
+      assert.equal(report.credits.weekly.cap, 35)
+      assert.equal(report.credits.monthlyCredits, 69.985238253)
+      // an ISO string, not an epoch the number reader would zero out
+      assert.equal(report.plan.currentPeriodEnd, '2026-10-17T04:41:14.000Z')
+      assert.equal(report.plan.name, 'GOAT')
+      // the two bodies whose field names are easiest to misread, and not whoami
+      assert.deepEqual(Object.keys(report.raw), ['usage', 'credits'])
+    } finally {
+      stub.restore()
+    }
+  })
+
+  it('accepts a reset stated in seconds without inventing a 20-million-day countdown', async () => {
+    const stub = stubFetch({ '/alpha/billing/credits': { windowLimits: { fiveHour: { used: 1, cap: 10, resetAt: 1789766268 } } } })
+    try {
+      assert.equal((await fetchUsageReport('key', BASE)).credits.fiveHour.resetAt, 1789766268000)
+    } finally {
+      stub.restore()
+    }
+  })
+
+  it('reads a success rate given as a fraction as well as one given as a percentage', async () => {
+    const fraction = stubFetch({ '/alpha/usage/summary': { successRate: 0.95 } })
+    try {
+      assert.equal((await fetchUsageReport('key', BASE)).usage.successRate, 0.95)
+    } finally {
+      fraction.restore()
+    }
+  })
 })
 
 describe('presentation helpers', () => {
@@ -253,6 +319,11 @@ describe('presentation helpers', () => {
     assert.match(text, /38\/40 completed, 2 failed, success rate 95%/)
     assert.match(text, /\$1\.2345 over the billing-period/)
     assert.match(text, /tokens: 100 in \/ 20 out/)
+  })
+
+  it('renders a millisecond reset as a real date', () => {
+    const [line] = creditLines({ monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 1, cap: 2, exceeded: false, resetAt: 1789766268634 } })
+    assert.match(line, /resets 2026-09-18T21:17:48\.634Z/)
   })
 
   it('says what is missing rather than reporting nothing', () => {

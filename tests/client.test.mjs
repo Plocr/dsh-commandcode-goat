@@ -240,6 +240,7 @@ describe('rendering', () => {
     plan: { name: 'GOAT', status: 'active' },
     usage: { completedCount: 38, totalCount: 40, successRate: 0.95, totalCost: 1.25, totalTokensIn: 1000, totalTokensOut: 20, periodBasis: 'billing-period' },
     credits: { monthlyCredits: 1000, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 12, cap: 60, exceeded: false } },
+    raw: { usage: { totalCount: 40 }, credits: { windowLimits: { fiveHour: { cap: 60 } } } },
   }
 
   it('summarizes the generated providers in the summary view', async () => {
@@ -266,6 +267,17 @@ describe('rendering', () => {
     assert.match(text, /ada/)
     assert.match(text, /12 \/ 60/)
     assert.match(text, /用本账户提供 web_search/)
+    assert.match(text, /原始响应/)
+  })
+
+  it('counts a window reset down from milliseconds, not from seconds', async () => {
+    // The API states `resetAt` in epoch milliseconds; reading it as seconds
+    // rendered "20694172d 16h 后重置".
+    const usage = { ...USAGE, credits: { ...USAGE.credits, fiveHour: { used: 12, cap: 60, exceeded: false, resetAt: Date.now() + 5 * 3600 * 1000 } } }
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': usage }))
+    const text = textOf(component({ ...face })).join(' ')
+    assert.match(text, /[45]h \d+m 后重置/)
+    assert.doesNotMatch(text, /\d{6,}d /)
   })
 })
 
