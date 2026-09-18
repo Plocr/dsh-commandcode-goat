@@ -358,7 +358,7 @@ describe('rendering', () => {
     assert.match(text, /创建 \/ 更新/)
     assert.match(text, /账户用量/)
     assert.match(text, /ada/)
-    assert.match(text, /已用 12 \/ 上限 60/)
+    assert.match(text, /已用 \$12 \/ 上限 \$60/)
     assert.match(text, /用本账户提供 web_search/)
     assert.match(text, /原始响应/)
   })
@@ -380,29 +380,28 @@ describe('rendering', () => {
   it('states every quota as a percentage with the figures behind it', async () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
     const text = textOf(component({ ...face })).join(' ')
-    assert.match(text, /月度额度/)
+    assert.match(text, /月度余额/)
     // The rolling windows lead and the monthly pool closes the group: the two
     // that move within a day are what the reader checks first.
     assert.ok(text.indexOf('5 小时窗口') < text.indexOf('每周窗口'))
-    assert.ok(text.indexOf('每周窗口') < text.indexOf('月度额度'))
+    assert.ok(text.indexOf('每周窗口') < text.indexOf('月度余额'))
     // the monthly pool is a remaining balance, so its share is spent/(spent+left)
     assert.match(text, /0\.02%/)
     // each window states used/cap directly: 12 of 60, and 6 of 60
     assert.match(text, /20%/)
     assert.match(text, /10%/)
-    // the figures stay beside the percentage, at two places rather than the
-    // service's full precision
-    assert.match(text, /69\.99/)
+    // the figures stay beside the share, rounded rather than at the service's
+    // full precision
+    assert.match(text, /\$69\.99/)
     assert.doesNotMatch(text, /69\.985238253/)
-    assert.match(text, /已用 12 \/ 上限 60/)
+    assert.match(text, /已用 \$12 \/ 上限 \$60/)
 
     // Reading order inside one meter: label, its share, then the figures — and
-    // the figures say what they are denominated in, because "0.21 / 14" with no
-    // unit is a puzzle.
+    // the figures are money, because these caps are a fifth and a half of the
+    // monthly grant rather than counters of anything.
     assert.ok(text.indexOf('5 小时窗口') < text.indexOf('20%'))
-    assert.ok(text.indexOf('20%') < text.indexOf('已用 12 / 上限 60'))
-    assert.match(text, /已用 12 \/ 上限 60（额度）/)
-    assert.match(text, /剩 69\.99 \/ 本期已用 0\.01（额度）/)
+    assert.ok(text.indexOf('20%') < text.indexOf('已用 $12 / 上限 $60'))
+    assert.match(text, /可用 \$69\.99 · 本期已用 \$0\.01/)
   })
 
   it('names both halves of every ratio instead of writing a bare a / b', async () => {
@@ -549,11 +548,15 @@ describe('pure helpers', () => {
     assert.equal(formatPercent(percentValue(80, 60)), '100%')
     assert.equal(percentValue(1, 0), 0)
     // the figures beside a quota are trimmed the same way
-    const { formatAmount } = exports.__internals
-    assert.equal(formatAmount(1.51498977), '1.51')
-    assert.equal(formatAmount(14), '14')
-    assert.equal(formatAmount(0.5), '0.5')
-    assert.equal(formatAmount(undefined), '0')
+    // A quota figure is money: whole dollars stay whole, fractions take two
+    // places, and something too small for two keeps a third rather than reading
+    // as zero.
+    const { formatDollars } = exports.__internals
+    assert.equal(formatDollars(0.211532321), '$0.21')
+    assert.equal(formatDollars(14), '$14')
+    assert.equal(formatDollars(66.572462096), '$66.57')
+    assert.equal(formatDollars(0.0012), '$0.001')
+    assert.equal(formatDollars(undefined), '$0')
   })
 })
 

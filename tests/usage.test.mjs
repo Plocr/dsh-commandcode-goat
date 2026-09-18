@@ -303,7 +303,8 @@ describe('presentation helpers', () => {
     assert.deepEqual(creditLines({ monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0 }), [])
     const lines = creditLines({ monthlyCredits: 10, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 1, cap: 2, exceeded: false } })
     assert.equal(lines.length, 2)
-    assert.match(lines[1], /5h window: 1\/2 requests/)
+    // Dollars, not request counts: the caps are round money limits.
+    assert.match(lines[1], /5h window: \$1\.00 used of \$2/)
   })
 
   it('writes a summary a model can read', () => {
