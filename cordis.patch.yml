@@ -1,0 +1,28 @@
+# dsh-commandcode-goat — the loader row this bundle contributes.
+#
+# A patch file is a top-level YAML ARRAY of patch entries, and a patch replaces
+# the targeted row's whole `config` (it does not deep-merge), so this bundle
+# only ever *adds* its own row and never restates a shipped one. The row names
+# this package rather than a source path, which is what lets Node resolve the
+# installed code.
+#
+# The plugin hard-injects nothing: `settings`, `web`, `webServer`, `tools` and
+# `credentials` are each attached through an optional ctx.inject, so the same
+# row loads in a headless or SDK profile and simply does less there.
+#
+# Per-deployment facts belong here rather than in the settings card when they
+# are secrets or fixed by the deployment. Anything omitted falls back to the
+# schema defaults:
+#
+#   config:
+#     plan: goat
+#     targetApiKeyEnv: COMMANDCODE_API_KEY
+#     # targetBaseURL: https://api.commandcode.ai/provider/v1
+#     # usageBaseURL: https://api.commandcode.ai
+#     # extraIds: [my/private-model]
+#     # autoSync: true
+#     # webSearch: true
+
+- insert:
+    - id: commandcode-goat
+      name: dsh-commandcode-goat

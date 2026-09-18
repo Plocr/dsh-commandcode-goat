@@ -1,0 +1,25 @@
+# Installed dependencies. The plugin's only runtime dependency is
+# @deepseek-ai/schemastery, which the target deployment already has; nothing
+# here belongs in the repository.
+node_modules/
+
+# Local npm/pnpm state
+.npm-cache/
+.pnpm-store/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+*.tgz
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+
+# Anything a local smoke test leaves behind
+*.log
+scratch/
+.scratch/

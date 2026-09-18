@@ -1,0 +1,7 @@
+# The plugin runs on Windows and on Linux CI alike, so line endings are
+# normalized in the repository and checked out per platform.
+* text=auto eol=lf
+
+*.png  binary
+*.jpg  binary
+*.ico  binary
