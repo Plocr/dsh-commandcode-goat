@@ -6,7 +6,7 @@ DSH 插件：把 **Command Code 订阅（GOAT / Pro / Max）** 接成 DeepSeek H
 dsh plugin --profile web add link:<本仓库根目录>
 ```
 
-安装后重启该 profile，然后进入 **设置 → 插件 → dsh-commandcode-goat**，选好档位点「创建 / 更新」。
+安装后重启该 profile，然后进入 **设置 → 插件 → 「Command Code」标签页**（侧边栏「插件」面板的「官方」分组里也有同一个入口），选好档位点「创建 / 更新」。
 
 ---
 
@@ -87,6 +87,19 @@ dsh plugin --profile web add link:<本仓库根目录>
 
 ## 安装
 
+### 方式一：桌面端自带的插件面板（推荐）
+
+侧边栏打开 **插件** 面板 → 右上角 **添加插件** → 粘贴下面任意一种 spec：
+
+```
+github:Plocr/dsh-commandcode-goat
+https://github.com/Plocr/dsh-commandcode-goat
+```
+
+安装器接受的形式（`@deepseek-ai/dsh-plugin-manager` 的 `parseInstallSpec`）：`github:owner/repo` 之类的 git 简写、git 仓库 URL、`.tgz` / `.tar.gz` 压缩包（本地绝对路径或 http 地址）、本地绝对路径，以及 npm 上的包名。装完按提示重启，**改 bundle 成员不会热生效**。
+
+### 方式二：命令行
+
 ```bat
 :: 安装（本地目录热链接；改完代码重构建即生效，无需重装）
 :: <本仓库根目录> = 含 package.json 的那个文件夹，Windows 上写绝对路径
@@ -101,6 +114,24 @@ dsh web
 :: 桌面端用的是 dsh-workbench profile
 dsh plugin --profile dsh-workbench add link:<本仓库根目录>
 ```
+
+命令行安装 GitHub 版本：
+
+```bat
+set "DSH_HOME=%APPDATA%\DSH Desktop\dsh-home"
+dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
+```
+
+## 卡片在哪里
+
+本插件把自己的页面注册进两个官方席位，两个都会出现：
+
+| 位置 | 怎么找 |
+|---|---|
+| **设置 → 插件 → 「Command Code」标签页** | 设置面板左侧选「插件」，顶部标签页里选 `Command Code` |
+| **侧边栏「插件」面板 → 「官方」分组** | 面板里点 `Command Code 订阅接入` 这一项 |
+
+两边是同一张卡片、同一份状态。如果你只看到了「已安装」分组里的包名（那里只有启用开关和包信息，没有配置项），说明你看的是包本身，不是插件的页面——往下翻到「官方」分组，或者在设置里找那个标签页。
 
 ## 配置 API 密钥
 

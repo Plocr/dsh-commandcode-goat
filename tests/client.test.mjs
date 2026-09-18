@@ -133,7 +133,7 @@ describe('bundle shape', () => {
     assert.equal(typeof exports.apply, 'function')
   })
 
-  it('registers one card into the slot the Plugins page dispatches', async () => {
+  it('registers into both plugin seats this build offers', async () => {
     const { entry } = await loadBundle()
     const exports = entry.factory((name) => {
       assert.equal(name, 'react')
@@ -142,18 +142,35 @@ describe('bundle shape', () => {
     const { ctx, registrations, injectedSlots } = browserContext()
     exports.apply(ctx)
 
-    assert.equal(registrations.length, 1)
-    assert.deepEqual(injectedSlots, ['plugins.item'])
-    const [{ slot, options, component }] = registrations
-    // The slot this build dispatches; `settings.plugin.item` no longer exists.
-    assert.equal(slot, 'plugins.item')
-    assert.equal(options.id, NS)
-    assert.equal(options.name, 'plugins.item')
-    assert.equal(options.locale, NS)
-    assert.equal(typeof options.order, 'number')
-    assert.equal(typeof options.label, 'function')
-    assert.equal(options.label(), 'Command Code 订阅接入')
-    assert.equal(typeof component, 'function')
+    // `settings.plugins.tab` is the tab in Settings → Plugins, `plugins.item`
+    // is the page in the Plugins sidebar panel. Registering only the second
+    // leaves the plugin reachable but not where it is looked for.
+    assert.deepEqual(injectedSlots, ['settings.plugins.tab', 'plugins.item'])
+    assert.deepEqual(registrations.map((entry_) => entry_.slot), ['settings.plugins.tab', 'plugins.item'])
+    for (const registration of registrations) {
+      assert.equal(registration.options.id, NS)
+      assert.equal(registration.options.name, registration.slot)
+      assert.equal(registration.options.locale, NS)
+      assert.equal(typeof registration.options.order, 'number')
+      assert.equal(typeof registration.options.label, 'function')
+      assert.equal(typeof registration.component, 'function')
+    }
+    const [tab, item] = registrations
+    assert.equal(tab.options.label(), 'Command Code')
+    assert.equal(item.options.label(), 'Command Code 订阅接入')
+    // The settings tab always renders the page; the panel entry answers both
+    // views it is dispatched with.
+    assert.match(textOf(tab.component({ ...tab.face })).join(' '), /订阅档位/)
+    assert.match(textOf(item.component({ view: 'summary', ...item.face })).join(' '), /尚未创建供应商/)
+    assert.match(textOf(item.component({ view: 'page', ...item.face })).join(' '), /订阅档位/)
+  })
+
+  it('no longer uses the slot this build removed', async () => {
+    const { entry } = await loadBundle()
+    const exports = entry.factory(() => reactShim())
+    const { ctx, injectedSlots } = browserContext()
+    exports.apply(ctx)
+    assert.equal(injectedSlots.includes('settings.plugin.item'), false)
   })
 
   it('registers both dictionaries for the active locale to choose from', async () => {
@@ -170,7 +187,10 @@ describe('bundle shape', () => {
     const exports = entry.factory(() => reactShim())
     const { ctx, registrations } = browserContext({ locale: 'en' })
     exports.apply(ctx)
-    assert.equal(registrations[0].options.label(), 'Command Code subscription')
+    const tab = registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+    assert.equal(tab.options.label(), 'Command Code')
+    const item = registrations.find((entry_) => entry_.slot === 'plugins.item')
+    assert.equal(item.options.label(), 'Command Code subscription')
   })
 })
 
@@ -190,11 +210,16 @@ describe('rendering', () => {
     try {
       exports.apply(ctx)
       await settle()
-      return registrations[0]
+      return registrations
     } finally {
       globalThis.fetch = originalFetch
     }
   }
+
+  /** The Settings tab's component and the face the slot would pass it. */
+  const settingsTab = (registrations) => registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+  /** The sidebar panel's entry, which is dispatched per view. */
+  const panelItem = (registrations) => registrations.find((entry_) => entry_.slot === 'plugins.item')
 
   const DESCRIBE = {
     plan: 'goat',
@@ -218,7 +243,7 @@ describe('rendering', () => {
   }
 
   it('summarizes the generated providers in the summary view', async () => {
-    const { component, face } = await mount({ '/describe': DESCRIBE, '/usage': USAGE })
+    const { component, face } = panelItem(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
     const text = textOf(component({ view: 'summary', ...face })).join('')
     assert.match(text, /GOAT/)
     assert.match(text, /43/)
@@ -226,13 +251,13 @@ describe('rendering', () => {
 
   it('says so when nothing has been created yet', async () => {
     const empty = { ...DESCRIBE, targets: Object.fromEntries(Object.entries(DESCRIBE.targets).map(([route, target]) => [route, { ...target, created: false, models: 0 }])) }
-    const { component, face } = await mount({ '/describe': empty, '/usage': USAGE })
+    const { component, face } = panelItem(await mount({ '/describe': empty, '/usage': USAGE }))
     const text = textOf(component({ view: 'summary', ...face })).join('')
     assert.match(text, /尚未创建供应商/)
   })
 
   it('renders the page view with the tier selector, targets and usage', async () => {
-    const { component, face } = await mount({ '/describe': DESCRIBE, '/usage': USAGE })
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
     const text = textOf(component({ view: 'page', ...face })).join(' ')
     assert.match(text, /订阅档位/)
     assert.match(text, /commandcode-goat-autosync/)
