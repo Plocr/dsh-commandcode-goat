@@ -316,9 +316,17 @@ describe('presentation helpers', () => {
     })
     assert.match(text, /account: ada/)
     assert.match(text, /plan: GOAT \(active\)/)
-    assert.match(text, /38\/40 completed, 2 failed, success rate 95%/)
+    assert.match(text, /requests: 40 in this period, 38 completed, 2 failed, success rate 95%/)
     assert.match(text, /\$1\.2345 over the billing-period/)
-    assert.match(text, /tokens: 100 in \/ 20 out/)
+    // both halves named, and the total the service states
+    assert.match(text, /tokens: 120 total \(100 input, 20 output\)/)
+  })
+
+  it('omits the failure clause and the total when there is nothing to say', () => {
+    const text = describeUsage({ usage: { totalCount: 5, completedCount: 5, failedCount: 0, successRate: 1, totalCost: 0, totalTokens: 40, totalTokensIn: 30, totalTokensOut: 10, periodBasis: 'billing-period' } })
+    assert.match(text, /requests: 5 in this period, 5 completed, success rate 100%/)
+    assert.doesNotMatch(text, /failed/)
+    assert.match(text, /tokens: 40 total \(30 input, 10 output\)/)
   })
 
   it('renders a millisecond reset as a real date', () => {

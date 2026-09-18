@@ -357,6 +357,19 @@ describe('rendering', () => {
     assert.match(text, /12 \/ 60/)
   })
 
+  it('names both halves of every ratio instead of writing a bare a / b', async () => {
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    const text = textOf(component({ ...face })).join(' ')
+    // The request figure is a count, not a share of itself: 40, never 38/40.
+    assert.match(text, /本期请求 40/)
+    assert.doesNotMatch(text, /38\/40/)
+    // The token figure states the total, and says which half is which.
+    assert.match(text, /本期 Token 1\.0k/)
+    assert.match(text, /输入 1\.0k · 输出 20/)
+    // No digit-joined ratio survives anywhere on the panel.
+    assert.doesNotMatch(text, /\d+\/\d+/)
+  })
+
   it('carries its own mark and says which build is loaded', async () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
     const tree = component({ ...face })
