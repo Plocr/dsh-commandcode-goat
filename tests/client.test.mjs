@@ -23,7 +23,16 @@ const NS = 'dsh-commandcode-goat'
  * these tests, so the hooks only have to answer once: a state setter that does
  * nothing and a snapshot read that returns what the store holds.
  */
+/**
+ * Initial values handed back by successive `useState` calls in one render.
+ * Empty means every state starts at the value its component passed; a test
+ * that needs a disclosure already open sets it (the card's states are, in
+ * order: the advanced disclosure, then the providers disclosure).
+ */
+let useStateValues = []
+
 function reactShim() {
+  let call = 0
   return {
     // React hands children to a component *through props*, so the element this
     // produces has to carry them in both places: `props.children` for a
@@ -41,7 +50,7 @@ function reactShim() {
         : (merged.children === undefined ? [] : [].concat(merged.children))
       return { type, props: merged, children: kids }
     },
-    useState: (initial) => [initial, () => {}],
+    useState: (initial) => [call < useStateValues.length ? useStateValues[call++] : initial, () => {}],
     useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
   }
 }
@@ -342,13 +351,30 @@ describe('rendering', () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
     const text = textOf(component({ view: 'page', ...face })).join(' ')
     assert.match(text, /订阅档位/)
-    assert.match(text, /commandcode-goat-autosync/)
+    // The provider names are detail and sit behind a disclosure; what leads is
+    // how many models the tier produced.
+    assert.match(text, /已获取 43 个模型/)
+    assert.doesNotMatch(text, /commandcode-goat-autosync/)
     assert.match(text, /创建 \/ 更新/)
     assert.match(text, /账户用量/)
     assert.match(text, /ada/)
     assert.match(text, /已用 12 \/ 上限 60/)
     assert.match(text, /用本账户提供 web_search/)
     assert.match(text, /原始响应/)
+  })
+
+  it('keeps the generated provider names behind a disclosure', async () => {
+    useStateValues = [false, true]
+    try {
+      const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+      const text = textOf(component({ ...face })).join(' ')
+      assert.match(text, /commandcode-goat-autosync/)
+      assert.match(text, /commandcode-goat-anthropic/)
+      assert.match(text, /已创建/)
+      assert.match(text, /未创建/)
+    } finally {
+      useStateValues = []
+    }
   })
 
   it('states every quota as a percentage with the figures behind it', async () => {
