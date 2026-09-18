@@ -395,6 +395,14 @@ describe('rendering', () => {
     assert.match(text, /69\.99/)
     assert.doesNotMatch(text, /69\.985238253/)
     assert.match(text, /已用 12 \/ 上限 60/)
+
+    // Reading order inside one meter: label, its share, then the figures — and
+    // the figures say what they are denominated in, because "0.21 / 14" with no
+    // unit is a puzzle.
+    assert.ok(text.indexOf('5 小时窗口') < text.indexOf('20%'))
+    assert.ok(text.indexOf('20%') < text.indexOf('已用 12 / 上限 60'))
+    assert.match(text, /已用 12 \/ 上限 60（额度）/)
+    assert.match(text, /剩 69\.99 \/ 本期已用 0\.01（额度）/)
   })
 
   it('names both halves of every ratio instead of writing a bare a / b', async () => {
