@@ -310,7 +310,7 @@ describe('rendering', () => {
     failures: [],
     account: { id: 'u1', userName: 'ada' },
     plan: { name: 'GOAT', status: 'active' },
-    usage: { completedCount: 38, totalCount: 40, successRate: 0.95, totalCost: 1.25, totalTokensIn: 1000, totalTokensOut: 20, periodBasis: 'billing-period' },
+    usage: { completedCount: 38, totalCount: 40, successRate: 0.95, totalCost: 1.25, totalTokensIn: 1000, totalTokensOut: 20, totalCredits: 0.014761747, totalMonthlyCredits: 0.014761747, periodBasis: 'billing-period' },
     credits: { monthlyCredits: 69.985238253, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 12, cap: 60, exceeded: false } },
     raw: { usage: { totalCount: 40 }, credits: { windowLimits: { fiveHour: { cap: 60 } } } },
   }
@@ -342,14 +342,19 @@ describe('rendering', () => {
     assert.match(text, /原始响应/)
   })
 
-  it('shows the monthly credit balance as its own labelled metric', async () => {
+  it('states every quota as a percentage with the figures behind it', async () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
     const text = textOf(component({ ...face })).join(' ')
     assert.match(text, /月度额度/)
-    // Two places, not the service's full precision, and not buried in a
-    // three-number run-on with the two empty balances beside it.
+    // the monthly pool is a remaining balance, so its share is spent/(spent+left)
+    assert.match(text, /0\.02%/)
+    // a window states used/cap directly: 12 of 60
+    assert.match(text, /20%/)
+    // the figures stay beside the percentage, at two places rather than the
+    // service's full precision
     assert.match(text, /69\.99/)
     assert.doesNotMatch(text, /69\.985238253/)
+    assert.match(text, /12 \/ 60/)
   })
 
   it('carries its own mark and says which build is loaded', async () => {
@@ -466,6 +471,26 @@ describe('pure helpers', () => {
     assert.equal(sameList([1], [1, 2]), false)
     assert.equal(providerKey('goat', 'openai'), 'commandcode-goat-autosync')
     assert.deepEqual(PLANS.map((plan) => plan.value), ['goat', 'pro', 'max'])
+  })
+
+  it('formats a share at the precision its magnitude deserves', async () => {
+    const { entry } = await loadBundle()
+    const exports = entry.factory(() => reactShim())
+    const { formatPercent, percentValue } = exports.__internals
+    // a quota barely touched must not round away to a flat zero
+    assert.equal(formatPercent(percentValue(0.014761747, 70)), '0.02%')
+    assert.equal(formatPercent(percentValue(1.5, 14)), '11%')
+    assert.equal(formatPercent(percentValue(12, 60)), '20%')
+    assert.equal(formatPercent(percentValue(0, 70)), '0%')
+    // clamped, because a provider can report a spend past its cap
+    assert.equal(formatPercent(percentValue(80, 60)), '100%')
+    assert.equal(percentValue(1, 0), 0)
+    // the figures beside a quota are trimmed the same way
+    const { formatAmount } = exports.__internals
+    assert.equal(formatAmount(1.51498977), '1.51')
+    assert.equal(formatAmount(14), '14')
+    assert.equal(formatAmount(0.5), '0.5')
+    assert.equal(formatAmount(undefined), '0')
   })
 })
 
