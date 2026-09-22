@@ -12,6 +12,8 @@ dsh plugin --profile web add link:<本仓库根目录>
 
 ## 这个插件不自己写适配器
 
+> **版本要求：dsh ≥ 0.1.7-alpha。** 0.1.7 把设置子系统换掉了（见文末《0.1.7 迁移》），0.5.0 起只支持新接口。
+
 它**不实现 `LlmAdapter`**。它把供应商 profile 写进第一方插件 `llm-pi-ai` 的设置命名空间，由 harness 自带的适配器去服务这些路由。
 
 这样做的原因是：流式分片、工具调用、思考参数分发、图片处理、历史回放这些逻辑都在 `llm-pi-ai` 里实现并测试过。外部适配器要把同一套协议重新推导一遍，还得跨版本保持正确；而一份 profile 只需要陈述事实——用哪个端点、哪种协议、哪些模型、各自什么能力。
@@ -197,6 +199,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 ## 开发
 
 ```sh
+npm install           # 只需要 @deepseek-ai/schemastery（其实就是 dsh 自带的那份）
 npm test              # 137 个用例，全部离线，不需要网络
 npm run verify:live   # 对真实服务跑一遍：模型列表、目录解析、档位统计、端点探活
 ```
@@ -220,6 +223,19 @@ tests/
 ---
 
 ## 与参考项目的关系
+
+## 0.1.7 迁移
+
+0.1.7-alpha 重写了设置子系统，这个插件依赖的三件事都变了。0.5.0 已按新接口重写；如果你的 dsh 还停在 0.1.6，请用 0.4.8。
+
+| 0.1.6 及以前 | 0.1.7 起 | 插件怎么改的 |
+|---|---|---|
+| 插件用 `settings.installSection()` / `settings.register()` **注册一个设置命名空间** | 服务换成 `SettingsForms`，**没有注册这回事**：每个插件的 `Config` 就是它的表单，`describe()` 按 **profile 行 id** 返回一份描述 | 删掉整段注册逻辑；`Config` 的每个字段加 `.volatile()` |
+| 普通字段就是值 | 标了 `.volatile()` 的字段拿到的是**活引用**（`{ get() }`），用户在别处改完就地更新，插件不重挂载 | `normalizeConfig()` 逐字段 `get()`；用 `ctx.on('loader/volatile-update')` 重算派生状态 |
+| 只有 `installSection` 注册过的命名空间能写 | 只有 **volatile 字段**能被写；`settings.mutate(ns, …)` 里的 `ns` 是**行 id**，写的是那一行自己的 config | 源同步仍然写 `llm-pi-ai` 那一行（它的 `providers` 本来就是 volatile），但行 id 改为从 `describe()` 里找，而不是硬编码 |
+| 浏览器半侧的设置服务叫 `ctx.settingsScope` | 改名为 **`ctx.configForms`**，`get(entryId)` 按**行 id** 取表单 | 卡片改为 `ctx.configForms.get(entryId)`，并在宿主上报的行 id 与本地常量不一致时自动重绑 |
+
+排查时注意：**行 id 由 profile 决定**。本插件的 patch 声明的是 `commandcode-goat`；如果哪次 dump-config 里这行被改名，插件会自己找到（宿主通过 bridge 上报行 id，卡片据此重绑）。
 
 架构参考了 [CJYLZS/dsh-commandcode-provider](https://github.com/CJYLZS/dsh-commandcode-provider)（MIT）——「把模型写进 `llm-pi-ai` 而不是自己写适配器」这个判断来自它，档位拆分、目录抓取、用量面板的做法也是。
 

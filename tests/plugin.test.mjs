@@ -15,6 +15,9 @@ function mockContext(services = {}) {
   const effects = []
   const ctx = {
     logger: { info() {}, warn() {}, debug() {} },
+    // The profile row this plugin was composed under: since dsh 0.1.7 that id
+    // is also this plugin's settings namespace.
+    fiber: { entry: { options: { id: 'commandcode-goat' } } },
     ...services,
     get(name) {
       return this[name]
@@ -28,34 +31,29 @@ function mockContext(services = {}) {
       effects.push({ label, dispose })
       return () => dispose?.()
     },
+    on() {},
   }
   return { ctx, effects }
 }
 
-/** A settings service recording every namespace it was asked to serve. */
-function mockSettings({ installSection = true, writable = true } = {}) {
-  const state = { sections: [], registered: [], mutations: [] }
+/**
+ * The dsh 0.1.7 settings service: `describe()` returns one descriptor per
+ * composed entry, keyed by the entry's row id, and `mutate()` writes that
+ * entry's own config. There is no namespace registration to record any more.
+ */
+function mockSettings({ writable = true, entries } = {}) {
+  const state = { mutations: [] }
   const settings = {
     writable,
     state,
-    describe: () => [{ ns: LLM_PI_AI, revision: 1, value: { providers: {} } }],
+    describe: () => entries ?? [
+      { ns: LLM_PI_AI, revision: 1, value: { providers: {} }, schema: { type: 'object', dict: { providers: {} } } },
+      { ns: 'commandcode-goat', revision: 1, value: {} },
+    ],
     async mutate(ns, ops, revision) {
       state.mutations.push({ ns, ops, revision })
       return {}
     },
-  }
-  if (installSection) {
-    settings.installSection = (owner, ns, schema, entry, hooks) => {
-      state.sections.push({ owner, ns, schema, entry, hooks })
-      hooks.setSource(() => entry)
-      hooks.onChange()
-    }
-  } else {
-    const scope = { get: () => ({}), watch: () => () => {} }
-    settings.register = (ns, schema, options) => {
-      state.registered.push({ ns, schema, options })
-      return scope
-    }
   }
   return settings
 }
@@ -131,8 +129,10 @@ function upstreamFetch() {
 }
 
 describe('Config', () => {
-  it('is a schemastery schema with the documented defaults', () => {
-    const resolved = Config({})
+  it('resolves the documented defaults', () => {
+    // Read through `normalizeConfig`, because a volatile field resolves to a
+    // live reference rather than to its value.
+    const resolved = normalizeConfig(Config({}))
     assert.equal(resolved.plan, 'goat')
     assert.equal(resolved.sourceURL, 'https://api.commandcode.ai/provider/v1/models')
     assert.equal(resolved.catalogURL, 'https://commandcode.ai/docs/plans/goat')
@@ -147,7 +147,7 @@ describe('Config', () => {
   })
 
   it('rejects a tier that is not offered', () => {
-    assert.equal(Config({ plan: 'pro' }).plan, 'pro')
+    assert.equal(normalizeConfig(Config({ plan: 'pro' })).plan, 'pro')
     assert.throws(() => Config({ plan: 'ultra' }))
   })
 
@@ -181,23 +181,23 @@ describe('apply', () => {
     assert.doesNotThrow(() => apply(ctx, Config({})))
   })
 
-  it('serves its settings namespace and calls the change hook', () => {
-    const settings = mockSettings()
-    const { ctx } = mockContext({ settings })
-    apply(ctx, Config({}))
-    assert.equal(settings.state.sections.length, 1)
-    assert.equal(settings.state.sections[0].ns, SETTINGS_NS)
-    assert.equal(settings.state.sections[0].owner, ctx)
-    assert.equal(settings.state.sections[0].schema, Config)
+  it('marks every field volatile, which is what makes it configurable', () => {
+    // dsh 0.1.7 projects a form — and accepts a write — only for fields carrying
+    // this marker, so an unmarked field is silently unconfigurable.
+    for (const [key, field] of Object.entries(Config.dict)) {
+      assert.equal(field.meta?.volatile, true, `${key} is not volatile`)
+    }
   })
 
-  it('falls back to the register-based lifecycle when installSection is absent', () => {
-    const settings = mockSettings({ installSection: false })
-    const { ctx } = mockContext({ settings })
+  it('reports the entry id its form binds to', async () => {
+    const settings = mockSettings()
+    const webServer = mockWebServer()
+    const { ctx } = mockContext({ settings, webServer })
     apply(ctx, Config({}))
-    assert.equal(settings.state.registered.length, 1)
-    assert.equal(settings.state.registered[0].ns, SETTINGS_NS)
-    assert.equal(settings.state.registered[0].options.base.plan, 'goat')
+    const route = webServer.state.routes.find((entry) => entry.path.endsWith('/describe'))
+    const res = bridgeResponse()
+    await route.handler(bridgeRequest(), res)
+    assert.equal(JSON.parse(res.body).value.entryId, 'commandcode-goat')
   })
 
   it('registers the bridge and the search provider, and takes the search selection', () => {

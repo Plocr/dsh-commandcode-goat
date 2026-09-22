@@ -7,7 +7,7 @@ import {
   SYNC_CODES,
   SyncError,
   buildRouteProfile,
-  describeNamespace,
+  piAiSection,
   readPiAiValue,
   syncPlan,
   upsertProvider,
@@ -32,7 +32,7 @@ function applyOp(section, op) {
  * plugin depends on: `describe` returns resolved sections, `mutate` applies
  * path ops, and a write carries the revision it read.
  */
-function fakeSettings({ value = {}, writable = true, registered = true, conflicts = 0, onMutate } = {}) {
+function fakeSettings({ value = {}, writable = true, registered = true, conflicts = 0, onMutate, entries } = {}) {
   const state = { value, revision: 7, writes: [], remainingConflicts: conflicts }
   return {
     writable,
@@ -43,11 +43,16 @@ function fakeSettings({ value = {}, writable = true, registered = true, conflict
       return state.writes
     },
     describe() {
-      return registered ? [{ ns: LLM_PI_AI_NS, value: state.value, revision: state.revision }] : []
+      if (!registered) return []
+      return entries ?? [{
+        ns: LLM_PI_AI_NS,
+        value: state.value,
+        revision: state.revision,
+        schema: { type: 'object', dict: { providers: {} } },
+      }]
     },
     async mutate(ns, ops, revision) {
-      assert.equal(ns, LLM_PI_AI_NS)
-      state.writes.push({ ops, revision })
+      state.writes.push({ ns, ops, revision })
       if (state.remainingConflicts > 0) {
         state.remainingConflicts -= 1
         state.revision += 1
@@ -105,11 +110,21 @@ describe('buildRouteProfile', () => {
   })
 })
 
-describe('describeNamespace', () => {
+describe('piAiSection', () => {
   it('returns undefined when the service or the namespace is absent', () => {
-    assert.equal(describeNamespace(undefined, LLM_PI_AI_NS), undefined)
-    assert.equal(describeNamespace({}, LLM_PI_AI_NS), undefined)
-    assert.equal(describeNamespace(fakeSettings({ registered: false }), LLM_PI_AI_NS), undefined)
+    assert.equal(piAiSection(undefined), undefined)
+    assert.equal(piAiSection({}), undefined)
+    assert.equal(piAiSection(fakeSettings({ registered: false })), undefined)
+  })
+
+  it('finds the section under a renamed row', () => {
+    // dsh 0.1.7 keys a settings section by the row the profile composed it
+    // under, and the profile owns that id — so the section is identified by the
+    // `providers` dict its schema carries when the shipped id is not there.
+    const renamed = fakeSettings({
+      entries: [{ ns: 'pi-ai', revision: 3, value: { providers: {} }, schema: { type: 'object', dict: { providers: {} } } }],
+    })
+    assert.equal(piAiSection(renamed)?.ns, 'pi-ai')
   })
 
   it('reads an empty section when the provider serves nothing yet', () => {

@@ -16,7 +16,11 @@ after(() => {
 })
 
 const CLIENT_PATH = new URL('../lib/client.js', import.meta.url)
-const NS = 'dsh-commandcode-goat'
+/**
+ * The settings section, which since dsh 0.1.7 is the *profile row id* this
+ * bundle's patch declares — not a namespace the plugin registers.
+ */
+const NS = 'commandcode-goat'
 
 /**
  * A React stand-in. The card is rendered by calling it as a plain function in
@@ -94,6 +98,7 @@ function browserContext({ locale = 'zh' } = {}) {
     revision: 1,
   }
   const effects = []
+  const requestedEntries = []
   const ctx = {
     effect(fn, label) {
       const dispose = fn()
@@ -113,14 +118,19 @@ function browserContext({ locale = 'zh' } = {}) {
       },
       getSnapshot: () => ({ active: locale, revision: 1 }),
     },
-    settingsScope: {
-      bind: ({ namespace }) => ({
-        namespace,
-        getSnapshot: () => scopeValue,
-        subscribe: () => () => {},
-        set: async () => {},
-        unset: async () => {},
-      }),
+    // dsh 0.1.7: the settings service is `configForms`, and it hands out one
+    // shared form per host plugin entry id rather than per registered namespace.
+    configForms: {
+      get(entryId) {
+        requestedEntries.push(entryId)
+        return {
+          entryId,
+          getSnapshot: () => scopeValue,
+          subscribe: () => () => {},
+          set: async () => {},
+          unset: async () => {},
+        }
+      },
     },
     slots: {
       inject(name, callback) {
@@ -135,7 +145,7 @@ function browserContext({ locale = 'zh' } = {}) {
       },
     },
   }
-  const context = { ctx, registrations, injectedSlots, dictionaries, effects, scopeValue }
+  const context = { ctx, registrations, injectedSlots, dictionaries, effects, scopeValue, requestedEntries }
   liveContexts.push(context)
   return context
 }
@@ -206,10 +216,12 @@ function findAll(node, tag, found = []) {
 describe('bundle shape', () => {
   it('registers under the package name and injects only the services it uses', async () => {
     const { entry } = await loadBundle()
-    assert.equal(entry.id, NS)
+    // The bundle's module id is its package name; the settings *section* it
+    // edits is the entry id above, which is a different string.
+    assert.equal(entry.id, 'dsh-commandcode-goat')
     assert.equal(typeof entry.factory, 'function')
     const exports = entry.factory(() => reactShim())
-    assert.deepEqual(exports.inject, ['slots', 'locale', 'settingsScope'])
+    assert.deepEqual(exports.inject, ['slots', 'locale', 'configForms'])
     assert.equal(typeof exports.apply, 'function')
   })
 
