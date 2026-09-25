@@ -6,19 +6,23 @@ DSH 插件：把 **Command Code 订阅（GOAT / Pro / Max）** 接成 DeepSeek H
 dsh plugin --profile web add link:<本仓库根目录>
 ```
 
-安装后重启该 profile，然后进入 **设置 → 插件 → 「Command Code」标签页**（侧边栏「插件」面板的「官方」分组里也有同一个入口），选好档位点「创建 / 更新」。
+安装后重启该 profile。**等十几秒**，`commandcode-goat-autosync` 会自己出现在 **设置 → 模型** 里——进去填上 API 密钥就能用，不需要先找到本插件的卡片。
+
+要改档位、开搜索、看用量时再打开卡片（位置见下文《卡片在哪里》）。
 
 ---
 
 ## 这个插件不自己写适配器
 
-> **版本要求：dsh ≥ 0.1.7-alpha。** 0.1.7 把设置子系统换掉了（见文末《0.1.7 迁移》），0.5.0 起只支持新接口。
+> **版本要求：dsh ≥ 0.1.7-alpha.2；已在 0.1.7-rc.2 上逐项验证。** 0.1.7 把设置子系统换掉了（见文末《0.1.7 迁移》），0.5.0 起只支持新接口。0.6.0 起默认自动创建供应商，并注册到 rc.2 新增的插件配置席位。
 
 它**不实现 `LlmAdapter`**。它把供应商 profile 写进第一方插件 `llm-pi-ai` 的设置命名空间，由 harness 自带的适配器去服务这些路由。
 
 这样做的原因是：流式分片、工具调用、思考参数分发、图片处理、历史回放这些逻辑都在 `llm-pi-ai` 里实现并测试过。外部适配器要把同一套协议重新推导一遍，还得跨版本保持正确；而一份 profile 只需要陈述事实——用哪个端点、哪种协议、哪些模型、各自什么能力。
 
-代价是：生成的供应商属于 `llm-pi-ai`，不属于本插件。所以同步是一个**显式、幂等**的动作（按钮、工具或 `autoSync`），而不是每次启动都偷偷写一遍。你在 **设置 → 模型** 里能看到并直接编辑它写下的内容。
+代价是：生成的供应商属于 `llm-pi-ai`，不属于本插件。所以同步必须**幂等且克制**——它只刷新 `models` 列表，绝不覆盖某条路由上已有的 `apiKeyEnv`、`baseURL`、`compat`、`displayName`；你把密钥填在 **设置 → 模型** 里之后，后续每次同步都不会动它。
+
+但它不该被藏在一个按钮后面。**`autoSync` 默认开启**：装完重启，插件在十几秒后自己把供应商创建出来，于是 **设置 → 模型** 里有了那一行，也就有了填密钥的地方。这一条是踩出来的——默认关掉时，用户装完插件、重启、打开模型列表，什么都没多出来，插件看起来像装坏了，而不是像在等一个按钮。
 
 ---
 
@@ -132,14 +136,18 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 ## 卡片在哪里
 
-本插件把自己的页面注册进两个官方席位，两个都会出现：
+本插件把自己的页面注册进**四个**官方席位，四个都会出现，都是同一张卡片、同一份状态：
 
-| 位置 | 怎么找 |
-|---|---|
-| **设置 → 插件 → 「Command Code」标签页** | 设置面板左侧选「插件」，顶部标签页里选 `Command Code` |
-| **侧边栏「插件」面板 → 「官方」分组** | 面板里点 `Command Code 订阅接入` 这一项 |
+| 位置 | 怎么找 | 从哪个版本起 |
+|---|---|---|
+| **侧边栏「插件」面板 → 「官方」分组** | 面板里点 `Command Code 订阅接入` 这一项 | 0.5.0 |
+| **侧边栏「插件」面板 → 已安装 → 点开 `dsh-commandcode-goat`** | 组合包详情页顶部就是本卡片 | 0.6.0 |
+| **同上 → 该组合包的行 `commandcode-goat` → 「配置」** | 行页面多出一个「配置」控件，打开同一张卡片 | 0.6.0 |
+| **设置 → 插件（rc.2 里叫「内置插件」）→ `Command Code` 标签页** | 设置面板左侧选「插件」，顶部标签页里选 `Command Code` | 0.5.0 |
 
-两边是同一张卡片、同一份状态。如果你只看到了「已安装」分组里的包名（那里只有启用开关和包信息，没有配置项），说明你看的是包本身，不是插件的页面——往下翻到「官方」分组，或者在设置里找那个标签页。
+后两个是 dsh 0.1.7-rc.2 为**组合包自己的配置**新开的席位：`plugins.bundle.config` 以包名为键，`plugins.row.config` 以 `<包名>#<行 id>` 为键——也就是 `dsh-commandcode-goat#commandcode-goat`。rc.2 把第三方插件的配置页挪到了侧边栏「插件」面板，所以只注册前两个席位的版本是「够得着、但不在你会去看的地方」。
+
+如果你只看到了「已安装」分组里的包名，说明你看的是包列表而不是插件的页面——点开那个组合包，卡片就在详情页上。
 
 卡片的阅读顺序是固定的几块：抬头 → **一行状态**（绿色的「已获取 N 个模型」，以及密钥是否配好）→ 订阅档位 → 账户用量 → 选项 → 「目标供应商」「高级」两个折叠块。每块都是同一个形状：带边框的盒子，第一行是它的标题，右侧放这一块的动作（重新读取 / 创建更新 / 刷新用量）。生成的供应商名字默认折叠——那是排查时才需要的东西，平时只需要知道拿到了多少个模型。
 
@@ -165,8 +173,8 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 | `targetCompat` | `{thinkingFormat: "openai", supportsReasoningEffort: true}` | OpenAI 路由的 compat 覆盖 |
 | `extraIds` | `[]` | 目录之外的私有模型 id，写入 OpenAI 路由 |
 | `includeReasoningEfforts` | `false` | 为推理模型写入思考档位映射 |
-| `autoSync` | `false` | 定时自动同步 |
-| `autoSyncIntervalMs` | `6h`（最小 60s） | 自动同步间隔 |
+| `autoSync` | `true` | 首次加载后自动创建一次，并按间隔刷新。关掉则只在卡片里点「创建 / 更新」时写入 |
+| `autoSyncIntervalMs` | `6h`（最小 60s） | 自动同步间隔；改动在下一次排期时生效 |
 | `webSearch` | `false` | 用本账户提供 `web_search` |
 | `usageBaseURL` | `https://api.commandcode.ai` | `/alpha/*` 用量与搜索的 API 根 |
 | `enableUsageTool` | `true` | 注册 `commandcode_usage` 工具 |
@@ -175,6 +183,13 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 ---
 
 ## 常见问题
+
+**装完插件，`设置 → 模型` 里没有 Command Code 那一行？**
+0.6.0 起不需要你做什么：重启 profile 后等十几秒，插件会自己创建供应商。如果一直不出现，按这个顺序查：
+
+1. 卡片里的错误行——`fetch-failed` 说明读不到模型列表（网络或代理），`provider-plugin-missing` 说明这个 profile 没加载 `llm-pi-ai`，没地方可写；
+2. 是不是把 `autoSync` 关掉了——关掉之后就只在点「创建 / 更新」时写入；
+3. 宿主半侧还是旧进程。宿主代码只在启动时被 `import` 一次，**装完插件必须重启 profile**，改代码之后也必须完全退出 DSH Desktop（含托盘）再启动。
 
 **卡片显示「尚未创建供应商」，点创建没反应？**
 先看卡片里的错误行。常见两类：`fetch-failed`（读不到模型列表，通常是网络或代理）与 `provider-plugin-missing`（该 profile 没加载 `llm-pi-ai`，就没有地方可写）。
@@ -200,7 +215,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 ```sh
 npm install           # 只需要 @deepseek-ai/schemastery（其实就是 dsh 自带的那份）
-npm test              # 137 个用例，全部离线，不需要网络
+npm test              # 163 个用例，全部离线，不需要网络
 npm run verify:live   # 对真实服务跑一遍：模型列表、目录解析、档位统计、端点探活
 ```
 
@@ -237,6 +252,21 @@ tests/
 
 排查时注意：**行 id 由 profile 决定**。本插件的 patch 声明的是 `commandcode-goat`；如果哪次 dump-config 里这行被改名，插件会自己找到（宿主通过 bridge 上报行 id，卡片据此重绑）。
 
+### 0.1.7-rc.2 适配（0.6.0）
+
+`0.1.7-rc.1` / `rc.2` 在 `alpha.2` 之后一天多才发布，而本插件当时是按 `alpha.2` 写的——DSH Desktop 在 `nightly` 通道上自动升级到 `rc.2` 之后，插件就停在了一个它没测过的宿主上。
+
+逐包对照下来，**rc.2 没有破坏本插件依赖的任何接口**：`settings.describe()` / `mutate()`、`llm-pi-ai` 的 `providers` volatile 字典、`ctx.web` 的 `registerSearchProvider` / `searchProviderId`、`webServer.register`、`tools.register`、`credentials.resolve`、`loader/volatile-update` 全部原样可用（`dsh-credentials`、`dsh-settings`、`dsh-web`、`dsh-client-modules`、`dsh-client-ui-slots` 的代码逐字节未变）。真正要改的是两处**约定**：
+
+| 项 | rc.2 的约定 | 0.6.0 的改法 |
+|---|---|---|
+| 第三方插件的配置页在哪 | 侧边栏「插件」面板声明三个席位：`plugins.item`（按注册 id）、`plugins.bundle.config`（按组合包包名）、`plugins.row.config`（按 `<包名>#<行 id>`） | 四个席位全注册，键分别是 `commandcode-goat`、`dsh-commandcode-goat`、`dsh-commandcode-goat#commandcode-goat` |
+| 装完就该能用 | `llm-pi-ai` 是**休眠挂载**：settings 分节不提供 profile 时，一条路由都不注册 | `autoSync` 默认开启，首次加载后自动创建一次 |
+
+还有一处是设计缺陷、不是版本差异：自动同步的开关和间隔都是 volatile 字段（卡片能就地改），而旧实现把它们的值在挂载时捕获了一次——于是关掉开关要重启 profile 才生效，改间隔同理。0.6.0 改成每次 tick 现读，间隔在下一轮排期生效。
+
+这两个改动的取舍是刻意的：**默认自动写一次，比让人先找到按钮更符合「装一个插件」的预期**；而写入本身仍然是幂等的、可见的、可在 **设置 → 模型** 里直接改的。要恢复成「只在点按钮时写」，把 `autoSync` 设成 `false` 即可。
+
 架构参考了 [CJYLZS/dsh-commandcode-provider](https://github.com/CJYLZS/dsh-commandcode-provider)（MIT）——「把模型写进 `llm-pi-ai` 而不是自己写适配器」这个判断来自它，档位拆分、目录抓取、用量面板的做法也是。
 
 在此基础上本版本做了这些改动：
@@ -247,7 +277,7 @@ tests/
 - **不抢占显式指定的搜索供应商**。
 - **写入前检查 `modelOverrides` 冲突**，而不是让 `llm-pi-ai` 抛一个难懂的校验错误。
 - **结构化错误码**（`fetch-failed` / `settings-read-only` / `provider-plugin-missing` / `target-has-model-overrides` …），卡片直接展示。
-- **137 个离线用例**，外加一份对真实服务的验证脚本。
+- **163 个离线用例**，外加一份对真实服务的验证脚本。
 
 ---
 
@@ -259,11 +289,11 @@ It owns no LLM adapter: it writes provider profiles into the first-party `llm-pi
 
 Tiers are cumulative and each writes its own providers, so switching never overwrites the previous tier. Claude models are routed to an `anthropic-messages` provider and everything else to `openai-completions`, decided by the gateway's own `supported_endpoints` rather than an id prefix. Reasoning parameters are blocked for models the vendor marks as non-reasoning, and never invented for the rest.
 
-The card lives at **Settings → Plugins → dsh-commandcode-goat** and shows the generated providers, a live usage dashboard (5-hour and weekly windows, credits, request/cost/token totals) and the account key state. The API key is configured on the generated provider in **Settings → Models**, not in the card. Web search is optional and will not displace a provider the deployment named explicitly.
+The card lives in the sidebar **Plugins** panel — as an entry in the official group, on the bundle's own detail page, and behind the **Configure** control on the bundle's row — plus a tab under **Settings → Plugins**. It shows the generated providers, a live usage dashboard (5-hour and weekly windows, credits, request/cost/token totals) and the account key state. The provider row is created automatically a few seconds after the profile starts (set `autoSync: false` to make every write explicit); the API key is configured on that generated provider in **Settings → Models**, not in the card. Web search is optional and will not displace a provider the deployment named explicitly.
 
 ```sh
 dsh plugin --profile web add link:<path to this repository>
-npm test            # 137 offline cases
+npm test            # 163 offline cases
 npm run verify:live # probe the real upstreams and account endpoints
 ```
 

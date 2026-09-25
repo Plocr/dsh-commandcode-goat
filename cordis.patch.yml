@@ -20,7 +20,7 @@
 #     # targetBaseURL: https://api.commandcode.ai/provider/v1
 #     # usageBaseURL: https://api.commandcode.ai
 #     # extraIds: [my/private-model]
-#     # autoSync: true
+#     # autoSync: false      # on by default: the routes are created on first load
 #     # webSearch: true
 
 - insert:

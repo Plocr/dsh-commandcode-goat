@@ -10,6 +10,10 @@ npm-debug.log*
 pnpm-debug.log*
 yarn-error.log*
 *.tgz
+# Written by the `npm install` the README tells you to run; the repo ships none,
+# because the one runtime dependency is a package the target deployment already
+# has and its exact patch version is the deployment's to choose.
+package-lock.json
 
 # Editor and OS noise
 .vscode/

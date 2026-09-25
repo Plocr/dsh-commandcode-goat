@@ -87,11 +87,11 @@ async function loadBundle() {
 }
 
 /** A browser context covering the three services the card injects. */
-function browserContext({ locale = 'zh' } = {}) {
+function browserContext({ locale = 'zh', scopeValue: scopeOverride } = {}) {
   const dictionaries = {}
   const registrations = []
   const injectedSlots = []
-  const scopeValue = {
+  const scopeValue = scopeOverride ?? {
     value: { plan: 'goat', webSearch: false, autoSync: false, enableUsageTool: true, autoSyncIntervalMs: 21_600_000 },
     user: {},
     base: {},
@@ -225,7 +225,7 @@ describe('bundle shape', () => {
     assert.equal(typeof exports.apply, 'function')
   })
 
-  it('registers into both plugin seats this build offers', async () => {
+  it('registers into every plugin seat this build offers', async () => {
     const { entry } = await loadBundle()
     const exports = entry.factory((name) => {
       assert.equal(name, 'react')
@@ -234,27 +234,45 @@ describe('bundle shape', () => {
     const { ctx, registrations, injectedSlots } = browserContext()
     exports.apply(ctx)
 
-    // `settings.plugins.tab` is the tab in Settings → Plugins, `plugins.item`
-    // is the page in the Plugins sidebar panel. Registering only the second
-    // leaves the plugin reachable but not where it is looked for.
-    assert.deepEqual(injectedSlots, ['settings.plugins.tab', 'plugins.item'])
-    assert.deepEqual(registrations.map((entry_) => entry_.slot), ['settings.plugins.tab', 'plugins.item'])
+    // `settings.plugins.tab` is the tab in Settings → Plugins; `plugins.item`
+    // is the card in the Plugins sidebar panel's official group; the last two
+    // are the seats the panel added for a bundle's *own* configuration, opened
+    // from the bundle's card or from the 配置 control on its row. A card that
+    // registers only the first two is reachable but not where the panel looks,
+    // which is how a plugin ends up installed and apparently inert.
+    const seats = ['settings.plugins.tab', 'plugins.item', 'plugins.bundle.config', 'plugins.row.config']
+    assert.deepEqual(injectedSlots, seats)
+    assert.deepEqual(registrations.map((entry_) => entry_.slot), seats)
+
+    const [tab, item, bundle, row] = registrations
+    // The list seats are keyed by the registration id; the configuration seats
+    // by the strings the Plugins page addresses them with — the bundle by its
+    // npm package name, the row by `<package name>#<row id>`.
+    assert.equal(tab.options.id, NS)
+    assert.equal(item.options.id, NS)
+    assert.equal(bundle.options.key, 'dsh-commandcode-goat')
+    assert.equal(row.options.key, 'dsh-commandcode-goat#commandcode-goat')
+    // The row id in that key is the one this bundle's patch declares, so a
+    // profile that renames the row breaks the address in exactly one place.
+    assert.equal(row.options.key, `dsh-commandcode-goat#${NS}`)
+
     for (const registration of registrations) {
-      assert.equal(registration.options.id, NS)
       assert.equal(registration.options.name, registration.slot)
       assert.equal(registration.options.locale, NS)
       assert.equal(typeof registration.options.order, 'number')
       assert.equal(typeof registration.options.label, 'function')
       assert.equal(typeof registration.component, 'function')
     }
-    const [tab, item] = registrations
     assert.equal(tab.options.label(), 'Command Code')
     assert.equal(item.options.label(), 'Command Code 订阅接入')
-    // The settings tab always renders the page; the panel entry answers both
+
+    // The settings tab always renders the page; every panel seat answers both
     // views it is dispatched with.
     assert.match(textOf(tab.component({ ...tab.face })).join(' '), /订阅档位/)
-    assert.match(textOf(item.component({ view: 'summary', ...item.face })).join(' '), /尚未创建供应商/)
-    assert.match(textOf(item.component({ view: 'page', ...item.face })).join(' '), /订阅档位/)
+    for (const seat of [item, bundle, row]) {
+      assert.match(textOf(seat.component({ view: 'summary', ...seat.face })).join(' '), /尚未创建供应商/)
+      assert.match(textOf(seat.component({ view: 'page', ...seat.face })).join(' '), /订阅档位/)
+    }
   })
 
   it('no longer uses the slot this build removed', async () => {
@@ -497,9 +515,9 @@ describe('rendering', () => {
       assert.equal(switches.length, 4)
       assert.deepEqual(switches.map((node) => node.props.label).sort(), [
         '为推理模型写入思考档位',
-        '定时自动同步',
         '注册 commandcode_usage 工具',
         '用本账户提供 web_search',
+        '自动创建与同步',
       ])
       for (const node of switches) {
         assert.equal(typeof node.props.onChange, 'function')
@@ -518,6 +536,41 @@ describe('rendering', () => {
       // button that carries it rather than found by walking the tree
       assert.ok(primary.props.icon !== undefined, 'and it carries an icon')
       assert.ok(findAll(tree, 'x-tag').some((node) => node.props.tone === 'danger'))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  /**
+   * The two halves have to agree about an absent `autoSync`, or the card lies.
+   *
+   * The host reads a missing field as "on", because the whole point of the
+   * default is that a fresh install produces the provider row by itself. A card
+   * that read the same absent field as "off" would draw the switch unset while
+   * the host kept writing routes — the one combination where the user cannot
+   * tell which half is wrong.
+   */
+  it('reads an absent auto-sync setting the way the host does', async () => {
+    const { entry, react } = await loadBundle()
+    const exports = entry.factory(requireFor(react, primitivesShim(react)))
+    // A snapshot from before the default existed: no `autoSync` key at all.
+    const { ctx, registrations } = browserContext({
+      scopeValue: { value: { plan: 'goat' }, user: {}, base: {}, revision: 1 },
+    })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      const path = String(url).replace('/api/dsh-commandcode-goat', '')
+      const value = path === '/describe' ? { ...DESCRIBE, hasKey: false, keySource: 'none' } : USAGE
+      return { ok: true, status: 200, json: async () => ({ ok: true, value }) }
+    }
+    try {
+      exports.apply(ctx)
+      await settle()
+      const tab = registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      const autoSync = findAll(tab.component({ ...tab.face }), 'x-switch')
+        .find((node) => node.props.label === '自动创建与同步')
+      assert.ok(autoSync, 'the auto-sync switch is rendered')
+      assert.equal(autoSync.props.checked, true, 'absent means on')
     } finally {
       globalThis.fetch = originalFetch
     }

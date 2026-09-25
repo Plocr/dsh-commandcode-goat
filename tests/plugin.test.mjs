@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
-import { describe, it } from 'node:test'
+import { after, describe, it } from 'node:test'
 
-import { Config, SETTINGS_NS, SYNC_TIMEOUT_MS, apply, normalizeConfig } from '../lib/index.js'
+import {
+  Config,
+  DEFAULT_AUTO_SYNC_INTERVAL_MS,
+  FIRST_SYNC_DELAY_MS,
+  SETTINGS_NS,
+  SYNC_TIMEOUT_MS,
+  apply,
+  normalizeConfig,
+} from '../lib/index.js'
 
 const LLM_PI_AI = 'llm-pi-ai'
 const BRIDGE_PREFIX = '/api/dsh-commandcode-goat'
@@ -29,6 +37,7 @@ function mockContext(services = {}) {
     effect(fn, label) {
       const dispose = fn()
       effects.push({ label, dispose })
+      mountedEffects.push(dispose)
       return () => dispose?.()
     },
     on() {},
@@ -101,6 +110,30 @@ async function withFetch(handler, body) {
   }
 }
 
+/** Let every promise already queued by a timer callback run to completion. */
+const settle = async () => {
+  for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve))
+}
+
+/**
+ * Every effect the mocked contexts mounted, so the file can unmount them.
+ *
+ * This is not tidiness. `apply` now always arms the auto-sync timer — the
+ * routes have to be created without anyone pressing a button — and a mounted
+ * fiber is what owns that timer. Nothing in these tests unmounts a real
+ * profile, so without this the process would sit on a pending 15-second
+ * timeout after the last assertion and the runner would never exit.
+ */
+const mountedEffects = []
+
+after(() => {
+  for (const dispose of mountedEffects.splice(0)) {
+    try {
+      dispose?.()
+    } catch { /* an effect that already tore itself down is not a failure */ }
+  }
+})
+
 /** A plan page carrying one catalog array, in the shape the page serves. */
 function goatPage(entries) {
   const json = JSON.stringify(entries).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
@@ -137,7 +170,7 @@ describe('Config', () => {
     assert.equal(resolved.sourceURL, 'https://api.commandcode.ai/provider/v1/models')
     assert.equal(resolved.catalogURL, 'https://commandcode.ai/docs/plans/goat')
     assert.equal(resolved.usageBaseURL, 'https://api.commandcode.ai')
-    assert.equal(resolved.autoSync, false)
+    assert.equal(resolved.autoSync, true)
     assert.equal(resolved.webSearch, false)
     assert.equal(resolved.includeReasoningEfforts, false)
     assert.equal(resolved.enableUsageTool, true)
@@ -170,6 +203,18 @@ describe('normalizeConfig', () => {
     assert.deepEqual(normalizeConfig({ extraIds: ['a', '  ', 7] }).extraIds, ['a'])
   })
 
+  it('reads auto-sync as on unless it was explicitly turned off', () => {
+    // The whole point of the default is that a fresh install produces the
+    // provider row in Settings → Models without anyone finding a button, so
+    // only an explicit `false` may disable it. An absent field — a config
+    // written before this default existed, or a profile patch that omits it —
+    // has to keep meaning "on".
+    assert.equal(normalizeConfig({}).autoSync, true)
+    assert.equal(normalizeConfig({ autoSync: undefined }).autoSync, true)
+    assert.equal(normalizeConfig({ autoSync: true }).autoSync, true)
+    assert.equal(normalizeConfig({ autoSync: false }).autoSync, false)
+  })
+
   it('falls back to goat for an unknown tier', () => {
     assert.equal(normalizeConfig({ plan: 'ultra' }).plan, 'goat')
   })
@@ -198,6 +243,23 @@ describe('apply', () => {
     const res = bridgeResponse()
     await route.handler(bridgeRequest(), res)
     assert.equal(JSON.parse(res.body).value.entryId, 'commandcode-goat')
+  })
+
+  it('falls back to the row id its own patch declares, not the package name', async () => {
+    // A context with no fiber — a programmatic mount — still has to name the
+    // row the bundle's patch inserts, because that is what the settings
+    // service keys a form by. The package name is a different string and
+    // nothing serves a section under it.
+    const settings = mockSettings()
+    const webServer = mockWebServer()
+    const { ctx } = mockContext({ settings, webServer })
+    delete ctx.fiber
+    apply(ctx, Config({}))
+    const route = webServer.state.routes.find((entry) => entry.path.endsWith('/describe'))
+    const res = bridgeResponse()
+    await route.handler(bridgeRequest(), res)
+    assert.equal(JSON.parse(res.body).value.entryId, SETTINGS_NS)
+    assert.equal(SETTINGS_NS, 'commandcode-goat')
   })
 
   it('registers the bridge and the search provider, and takes the search selection', () => {
@@ -276,6 +338,92 @@ describe('apply', () => {
     const { ctx } = mockContext({ settings: mockSettings(), tools })
     apply(ctx, Config({ enableUsageTool: false }))
     assert.equal(tools.state.tools.length, 0)
+  })
+})
+
+/**
+ * The routes have to exist before anyone can type a key into them.
+ *
+ * A plugin whose whole job is to make a subscription selectable, but which
+ * waits for someone to find a button, reads as broken rather than as pending:
+ * no provider row appears in Settings → Models, so there is nowhere to put the
+ * credential and no reason to believe the install did anything.
+ */
+describe('automatic creation', () => {
+  /** Mount the plugin with a mutable config, and a fetch that answers upstream. */
+  function mount(config = {}) {
+    const settings = mockSettings()
+    const { ctx } = mockContext({ settings })
+    apply(ctx, config)
+    return { settings, config }
+  }
+
+  it('creates the routes on its own, after letting the tree compose', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { settings } = mount(Config({}))
+    // Nothing is written while the tree is still coming up: the write targets
+    // another plugin's section and would race that plugin's registration.
+    assert.equal(settings.state.mutations.length, 0)
+
+    await withFetch(upstreamFetch(), async () => {
+      t.mock.timers.tick(FIRST_SYNC_DELAY_MS)
+      await settle()
+    })
+    assert.equal(settings.state.mutations.length, 1)
+    assert.equal(settings.state.mutations[0].ns, LLM_PI_AI)
+  })
+
+  it('reads the toggle at each tick, so turning it off stops the writes', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    // A plain object, not `Config({...})`: this is the live reference the card
+    // edits in place, which is the whole point of a volatile field.
+    const { settings, config } = mount({ autoSync: false })
+    await withFetch(upstreamFetch(), async () => {
+      t.mock.timers.tick(FIRST_SYNC_DELAY_MS)
+      await settle()
+    })
+    assert.equal(settings.state.mutations.length, 0, 'an off switch means no write')
+
+    // Flipped the way the card flips it — no remount, no reload.
+    config.autoSync = true
+    await withFetch(upstreamFetch(), async () => {
+      t.mock.timers.tick(DEFAULT_AUTO_SYNC_INTERVAL_MS)
+      await settle()
+    })
+    assert.equal(settings.state.mutations.length, 1, 'the flip reaches the next tick')
+  })
+
+  it('reschedules from the interval as it stands after the tick', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { settings, config } = mount({ autoSync: true, autoSyncIntervalMs: 60_000 })
+    await withFetch(upstreamFetch(), async () => {
+      t.mock.timers.tick(FIRST_SYNC_DELAY_MS)
+      await settle()
+    })
+    assert.equal(settings.state.mutations.length, 1)
+
+    // The wait already scheduled uses the cadence that was in force when it was
+    // scheduled — a pending timer is not retroactively shortened. Changing the
+    // interval therefore governs the wait scheduled *next*, so the new value is
+    // in force from the cycle after that one.
+    config.autoSyncIntervalMs = 24 * 60 * 60 * 1000
+    await withFetch(upstreamFetch(), async () => {
+      t.mock.timers.tick(60_000)
+      await settle()
+    })
+    assert.equal(settings.state.mutations.length, 2, 'the wait already scheduled still ran')
+
+    await withFetch(upstreamFetch(), async () => {
+      t.mock.timers.tick(60_000)
+      await settle()
+    })
+    assert.equal(settings.state.mutations.length, 2, 'and the new cadence stopped the next one')
+
+    await withFetch(upstreamFetch(), async () => {
+      t.mock.timers.tick(24 * 60 * 60 * 1000)
+      await settle()
+    })
+    assert.equal(settings.state.mutations.length, 3, 'the new cadence is now what waits')
   })
 })
 
