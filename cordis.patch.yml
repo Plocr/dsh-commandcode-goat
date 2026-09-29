@@ -15,12 +15,13 @@
 # schema defaults:
 #
 #   config:
-#     plan: goat
+#     plan: goat            # go | goat | pro | max
 #     targetApiKeyEnv: COMMANDCODE_API_KEY
 #     # targetBaseURL: https://api.commandcode.ai/provider/v1
 #     # usageBaseURL: https://api.commandcode.ai
 #     # extraIds: [my/private-model]
 #     # autoSync: false      # on by default: the routes are created on first load
+#     # pruneOtherPlans: false  # on by default: a switch removes the other tier's routes
 #     # webSearch: true
 
 - insert:

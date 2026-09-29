@@ -31,9 +31,23 @@ const NS = 'commandcode-goat'
  * Initial values handed back by successive `useState` calls in one render.
  * Empty means every state starts at the value its component passed; a test
  * that needs a disclosure already open sets it (the card's states are, in
- * order: the advanced disclosure, then the providers disclosure).
+ * order: the advanced disclosure, the providers disclosure, then the tab
+ * selected in the merged provider card).
  */
 let useStateValues = []
+
+/**
+ * Hold the card's three states where a test wants them, across every render.
+ *
+ * The React stand-in hands its values out by call order and never rewinds, so
+ * a single set only survives the first render — and a test that renders,
+ * clicks a control and renders again would silently get the card's own initial
+ * states back on the second pass. Repeating the triple keeps the phases aligned
+ * however many times a test renders.
+ */
+function statesFor([advanced, providers, tab], renders = 6) {
+  return Array.from({ length: renders }, () => [advanced, providers, tab]).flat()
+}
 
 function reactShim() {
   let call = 0
@@ -213,6 +227,23 @@ function findAll(node, tag, found = []) {
   return findAll(node.children ?? [], tag, found)
 }
 
+/** Every element carrying one class, so a test can find a block by its role. */
+function findByClass(node, className, found = []) {
+  if (Array.isArray(node)) {
+    for (const child of node) findByClass(child, className, found)
+    return found
+  }
+  if (node === null || node === undefined || typeof node !== 'object') return found
+  if (typeof node.props?.className === 'string' && node.props.className.split(' ').includes(className)) {
+    found.push(node)
+  }
+  if (typeof node.type === 'function') {
+    findByClass(node.type(node.props), className, found)
+    return found
+  }
+  return findByClass(node.children ?? [], className, found)
+}
+
 describe('bundle shape', () => {
   it('registers under the package name and injects only the services it uses', async () => {
     const { entry } = await loadBundle()
@@ -305,14 +336,20 @@ describe('bundle shape', () => {
 })
 
 describe('rendering', () => {
-  /** Mount the card and answer its bridge calls from `responses`. */
-  async function mount(responses) {
+  /**
+   * Mount the card and answer its bridge calls from `responses`, leaving the
+   * fetch stub installed so a test can drive a control that talks to the host
+   * and read back the request it made. The caller restores `globalThis.fetch`.
+   */
+  async function mountWithCalls(responses) {
     const { entry, react } = await loadBundle()
     const exports = entry.factory(() => react)
     const { ctx, registrations } = browserContext()
+    const calls = []
     const originalFetch = globalThis.fetch
-    globalThis.fetch = async (url) => {
+    globalThis.fetch = async (url, options) => {
       const path = String(url).replace('/api/dsh-commandcode-goat', '')
+      calls.push({ path, body: options?.body })
       const body = responses[path]
       if (body === undefined) return { ok: false, status: 404, json: async () => ({}) }
       return { ok: true, status: 200, json: async () => ({ ok: true, value: body }) }
@@ -320,10 +357,18 @@ describe('rendering', () => {
     try {
       exports.apply(ctx)
       await settle()
-      return registrations
-    } finally {
+    } catch (error) {
       globalThis.fetch = originalFetch
+      throw error
     }
+    return { registrations, calls, originalFetch }
+  }
+
+  /** Mount for a test that only reads the rendered tree. */
+  async function mount(responses) {
+    const mounted = await mountWithCalls(responses)
+    globalThis.fetch = mounted.originalFetch
+    return mounted.registrations
   }
 
   /** The Settings tab's component and the face the slot would pass it. */
@@ -331,20 +376,100 @@ describe('rendering', () => {
   /** The sidebar panel's entry, which is dispatched per view. */
   const panelItem = (registrations) => registrations.find((entry_) => entry_.slot === 'plugins.item')
 
+  /**
+   * The four tiers, verbatim from the frozen 0.7.0 bridge contract: quota and
+   * documentation per tier, which tier the config is on, and which tier the
+   * account's own subscription maps to.
+   */
+  const TIERS = [
+    {
+      plan: 'go',
+      title: 'Go',
+      provider: 'Command | go',
+      docURL: 'https://commandcode.ai/docs/plans/go',
+      variants: [{ label: 'Go', price: 1, fiveHour: 3, weekly: 6, monthly: 10 }],
+      models: 53,
+      live: 53,
+      selected: false,
+      subscribed: false,
+      source: null,
+      routes: [],
+    },
+    {
+      plan: 'goat',
+      title: 'GOAT',
+      provider: 'Command | goat',
+      docURL: 'https://commandcode.ai/docs/plans/goat',
+      variants: [{ label: 'GOAT', price: 10, fiveHour: 14, weekly: 35, monthly: 70 }],
+      models: 43,
+      live: 43,
+      selected: true,
+      subscribed: true,
+      source: 'organization',
+      routes: ['openai'],
+    },
+    {
+      plan: 'pro',
+      title: 'Pro',
+      provider: 'Command | pro',
+      docURL: 'https://commandcode.ai/docs/plans/pro',
+      variants: [{ label: 'Pro', price: 20, fiveHour: 16, weekly: 40, monthly: 80 }],
+      models: 61,
+      live: 60,
+      selected: false,
+      subscribed: false,
+      source: null,
+      routes: [],
+    },
+    {
+      plan: 'max',
+      title: 'Max',
+      provider: 'Command | max',
+      docURL: 'https://commandcode.ai/docs/plans/max',
+      // Two sizes, so the card cannot describe Max with one figure alone.
+      variants: [
+        { label: 'Max 10×', price: 100, fiveHour: 45, weekly: 90, monthly: 150, premiumMonthly: 100 },
+        { label: 'Max 20×', price: 200, fiveHour: 90, weekly: 180, monthly: 300, premiumMonthly: 200 },
+      ],
+      // Nobody has synced yet in this fixture, so both counts are null.
+      models: null,
+      live: null,
+      selected: false,
+      subscribed: false,
+      source: null,
+      routes: [],
+    },
+  ]
   const DESCRIBE = {
-    version: '0.4.0',
+    entryId: 'commandcode-goat',
+    version: '0.7.0',
     plan: 'goat',
-    plans: ['goat', 'pro', 'max'],
+    plans: ['go', 'goat', 'pro', 'max'],
     apiKeyEnv: 'COMMANDCODE_API_KEY',
+    usageBaseURL: 'https://api.commandcode.ai',
     hasKey: true,
+    keySource: 'environment',
     writable: true,
     targets: {
-      openai: { key: 'commandcode-goat-autosync', created: true, models: 43 },
-      anthropic: { key: 'commandcode-goat-anthropic', created: false, models: 0 },
-      responses: { key: 'commandcode-goat-responses', created: false, models: 0 },
+      openai: { key: 'commandcode-goat-autosync', slot: 'openai', channel: 'AutoSync', api: 'openai-completions', created: true, models: 43, displayName: 'Command | goat' },
+      anthropic: { key: 'commandcode-goat-anthropic', slot: 'anthropic', channel: 'Anthropic', api: '', created: false, models: 0, displayName: 'Command | goat · Claude' },
+      responses: { key: 'commandcode-goat-responses', slot: 'responses', channel: 'Responses', api: '', created: false, models: 0, displayName: 'Command | goat · Responses' },
     },
+    tiers: TIERS,
+    subscription: {
+      plan: 'goat',
+      title: 'GOAT',
+      planId: 'individual-goat',
+      status: 'active',
+      source: 'organization',
+      personalPlanId: 'individual-goat',
+      organizationPlanId: 'individual-goat',
+    },
+    stale: [],
     search: { registered: true, enabled: false },
   }
+  /** One route another tier left behind, as `describe.stale` states it. */
+  const STALE = { key: 'commandcode-pro-autosync', plan: 'pro', slot: 'openai', models: 72 }
   const USAGE = {
     failures: [],
     account: { id: 'u1', userName: 'ada' },
@@ -393,17 +518,299 @@ describe('rendering', () => {
     assert.match(text, /原始响应/)
   })
 
-  it('keeps the generated provider names behind a disclosure', async () => {
-    useStateValues = [false, true]
+  /** The tabs of the merged provider card, in strip order. */
+  const tabsOf = (tree) => findAll(tree, 'button').filter((node) => node.props.role === 'tab')
+  /** The tier cards, in the order the host stated them. */
+  const tierNodes = (tree) => findByClass(tree, 'ccg-tier')
+
+  it('renders one provider card with a tab per protocol, not a row per slot', async () => {
+    useStateValues = statesFor([false, true, null])
+    try {
+      const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+      const tree = component({ ...face })
+      const text = textOf(tree).join(' ')
+
+      // The provider is named once, above the strip: the two routes used to be
+      // two rows whose keys differed by a suffix the reader had to decode.
+      assert.match(text, /Command \| goat/)
+      assert.deepEqual(tabsOf(tree).map((node) => textOf(node).join('')), ['AutoSync', 'Anthropic', 'Responses'])
+      // The selected panel states that one route: its key, its protocol, its
+      // state and its model count.
+      assert.match(text, /commandcode-goat-autosync/)
+      assert.match(text, /openai-completions/)
+      assert.match(text, /已创建/)
+      assert.match(text, /43 个模型/)
+      assert.match(text, /API 密钥配置在生成的供应商上/)
+      // The other slots are behind their own tab, not printed as extra rows.
+      assert.doesNotMatch(text, /commandcode-goat-anthropic/)
+      assert.doesNotMatch(text, /commandcode-goat-responses/)
+    } finally {
+      useStateValues = []
+    }
+  })
+
+  it('restates the selected tier’s figures where its routes are listed', async () => {
+    // The options section compares all four tiers; the targets section repeats
+    // the one in use, beside the keys it produced, and no other — a second copy
+    // of the other three would be the duplication this card exists to remove.
+    useStateValues = statesFor([false, true, null])
+    try {
+      const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+      const tree = component({ ...face })
+      const targets = findByClass(tree, 'ccg-card').find((node) => findByClass(node, 'ccg-provider').length > 0)
+      assert.ok(targets !== undefined, 'the targets disclosure is open')
+      const inTargets = findByClass(targets, 'ccg-tier')
+      assert.equal(inTargets.length, 1)
+      const text = textOf(inTargets[0]).join(' ')
+      assert.match(text, /GOAT/)
+      assert.match(text, /Command \| goat/)
+      // Its documentation link and its default quota come with it.
+      assert.deepEqual(findAll(inTargets[0], 'a').map((node) => node.props.href), ['https://commandcode.ai/docs/plans/goat'])
+      assert.match(text, /\$70/)
+      // The tier in use needs no switch button: it is already the one selected.
+      assert.deepEqual(findAll(inTargets[0], 'button'), [])
+    } finally {
+      useStateValues = []
+    }
+  })
+
+  it('shows one protocol at a time, on the tab the reader selected', async () => {
+    useStateValues = statesFor([false, true, 'anthropic'])
     try {
       const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
       const text = textOf(component({ ...face })).join(' ')
-      assert.match(text, /commandcode-goat-autosync/)
       assert.match(text, /commandcode-goat-anthropic/)
-      assert.match(text, /已创建/)
       assert.match(text, /未创建/)
+      assert.doesNotMatch(text, /commandcode-goat-autosync/)
+      // A route that does not exist states no protocol and no model count: the
+      // host writes both when it writes the route, and a zero here would read
+      // as a route that exists and serves nothing.
+      assert.doesNotMatch(text, /openai-completions/)
+      assert.doesNotMatch(text, /0 个模型/)
     } finally {
       useStateValues = []
+    }
+  })
+
+  it('still names a route from a host too old to describe its targets', async () => {
+    // A 0.6.x host reports a slot's state without a key or a protocol. The card
+    // falls back to the key this plugin would write rather than rendering a
+    // blank where the key belongs.
+    const describe = { ...DESCRIBE, tiers: undefined, plans: undefined, targets: { openai: { created: false, models: 0 } } }
+    useStateValues = statesFor([false, true, null])
+    try {
+      const { component, face } = settingsTab(await mount({ '/describe': describe, '/usage': USAGE }))
+      const tree = component({ ...face })
+      const text = textOf(tree).join(' ')
+      assert.equal(textOf(findByClass(tree, 'ccg-providerName')[0]).join(''), 'Command | goat')
+      assert.match(text, /commandcode-goat-autosync/)
+      assert.match(text, /未创建/)
+      // Nothing invented about a route the host has not written.
+      assert.doesNotMatch(text, /openai-completions/)
+    } finally {
+      useStateValues = []
+    }
+  })
+
+  it('keeps the tabs reachable from the keyboard, not only by pointer', async () => {
+    useStateValues = statesFor([false, true, null])
+    try {
+      const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+      const tabs = tabsOf(component({ ...face }))
+      assert.equal(tabs.length, 3)
+      for (const tab of tabs) {
+        assert.equal(tab.props.role, 'tab')
+        assert.equal(typeof tab.props['aria-selected'], 'boolean')
+        assert.equal(typeof tab.props.onClick, 'function')
+        assert.equal(typeof tab.props.onKeyDown, 'function')
+      }
+      // Exactly the selected tab is in the tab order, which is what a tablist
+      // means: Tab leaves the strip, the arrow keys move inside it.
+      assert.deepEqual(tabs.map((tab) => tab.props['aria-selected']), [true, false, false])
+      assert.deepEqual(tabs.map((tab) => tab.props.tabIndex), [0, -1, -1])
+    } finally {
+      useStateValues = []
+    }
+  })
+
+  it('describes every tier with its quota, its models and its documentation', async () => {
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    const tree = component({ ...face })
+    const text = textOf(tree).join(' ')
+
+    const tiers = tierNodes(tree)
+    assert.equal(tiers.length, 4, 'one card per tier the host described')
+    for (const [index, tier] of tiers.entries()) {
+      const tierText = textOf(tier).join(' ')
+      assert.ok(tierText.includes(TIERS[index].title), `${TIERS[index].plan} is titled`)
+      assert.ok(tierText.includes(TIERS[index].provider), `${TIERS[index].plan} names its provider`)
+    }
+
+    // Max is sold as two sizes, so the card states both rather than describing
+    // a plan the reader may not be on.
+    assert.match(text, /Max 10×/)
+    assert.match(text, /Max 20×/)
+    assert.match(text, /\$100 \/ 月/)
+    assert.match(text, /\$200 \/ 月/)
+    // The figures behind the price, each under its own name.
+    assert.match(text, /月费 \$10 \/ 月/)
+    assert.match(text, /5 小时窗口 \$14/)
+    assert.match(text, /每周窗口 \$35/)
+    assert.match(text, /月度余额 \$70/)
+    assert.match(text, /高级额度 \$100/)
+    // A tier nobody has synced yet says so instead of printing a zero.
+    assert.match(text, /这档有多少模型，要等第一次同步读过目录才知道。/)
+    assert.match(text, /43 个模型，其中 43 个在线/)
+
+    // The citation is what makes the quota checkable.
+    assert.match(text, /档位说明/)
+    const links = findAll(tree, 'a')
+    assert.deepEqual(links.map((node) => node.props.href), TIERS.map((tier) => tier.docURL))
+    for (const link of links) {
+      assert.equal(link.props.target, '_blank')
+      assert.equal(link.props.rel, 'noreferrer')
+    }
+  })
+
+  it('marks the tier in use and the tier the account pays for', async () => {
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    const [go, goat, pro] = tierNodes(component({ ...face }))
+    assert.match(textOf(goat).join(' '), /当前档位/)
+    assert.match(textOf(goat).join(' '), /账户订阅（组织）/)
+    for (const tier of [go, pro]) {
+      assert.doesNotMatch(textOf(tier).join(' '), /当前档位/)
+      assert.doesNotMatch(textOf(tier).join(' '), /账户订阅/)
+    }
+  })
+
+  it('offers a switch per tier, and never switches from the card body', async () => {
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    const [go, goat, pro, max] = tierNodes(component({ ...face }))
+
+    // The body is not a control: the pills above remain the only way to stage a
+    // tier, so clicking the figures cannot change the configuration they state.
+    for (const tier of [go, goat, pro, max]) assert.equal(tier.props.onClick, undefined)
+
+    const buttonIn = (tier) => findAll(tier, 'button')[0]
+    assert.equal(buttonIn(goat), undefined, 'the configured tier needs no switch to itself')
+    for (const tier of [go, pro, max]) {
+      assert.equal(textOf(buttonIn(tier)).join(''), '切换到此档位')
+    }
+
+    buttonIn(pro).props.onClick()
+    assert.equal(face.store.getSnapshot().fields.plan, 'pro')
+    assert.equal(face.store.getSnapshot().dirty, true)
+  })
+
+  it('names the account\u2019s own tier when the config writes another one', async () => {
+    // The state this card exists to explain: the account is subscribed to Pro,
+    // the plugin writes GOAT, and nothing is broken.
+    const describe = {
+      ...DESCRIBE,
+      subscription: { ...DESCRIBE.subscription, plan: 'pro', title: 'Pro', source: 'personal' },
+      tiers: TIERS.map((tier) => ({
+        ...tier,
+        selected: tier.plan === 'goat',
+        subscribed: tier.plan === 'pro',
+        source: tier.plan === 'pro' ? 'personal' : null,
+      })),
+    }
+    const { component, face } = settingsTab(await mount({ '/describe': describe, '/usage': USAGE }))
+    const tree = component({ ...face })
+    const text = textOf(tree).join(' ')
+
+    // The header states the account's plan and which subscription it is.
+    assert.match(text, /Pro（个人）/)
+    // And one line names both, so the reader does not have to diff them.
+    assert.match(text, /账户订阅是 Pro 档，插件当前写的是 GOAT 档/)
+
+    const notice = findByClass(tree, 'ccg-notice')
+      .find((node) => textOf(node).join(' ').includes('账户订阅是'))
+    const switchButton = findAll(notice, 'button')[0]
+    assert.equal(textOf(switchButton).join(''), '切回账户订阅的档位')
+    switchButton.props.onClick()
+    assert.equal(face.store.getSnapshot().fields.plan, 'pro')
+
+    // The Pro card carries the tag that says why its button reads differently.
+    const pro = tierNodes(tree).find((tier) => textOf(tier).join(' ').includes('Command | pro'))
+    assert.match(textOf(pro).join(' '), /账户订阅（个人）/)
+  })
+
+  it('stays silent about a subscription that could not be read', async () => {
+    const describe = {
+      ...DESCRIBE,
+      subscription: null,
+      // Nothing is subscribed in this fixture either, so any remaining
+      // subscription wording would be the card inventing one.
+      tiers: TIERS.map((tier) => ({ ...tier, subscribed: false, source: null })),
+    }
+    const { component, face } = settingsTab(await mount({ '/describe': describe, '/usage': USAGE }))
+    const text = textOf(component({ ...face })).join(' ')
+    assert.doesNotMatch(text, /账户订阅/)
+    assert.doesNotMatch(text, /（组织）/)
+    assert.doesNotMatch(text, /（个人）/)
+  })
+
+  it('lists the routes another tier left behind, above the provider card', async () => {
+    useStateValues = statesFor([false, true, null])
+    try {
+      const describe = { ...DESCRIBE, stale: [STALE] }
+      const { component, face } = settingsTab(await mount({ '/describe': describe, '/usage': USAGE }))
+      const text = textOf(component({ ...face })).join(' ')
+      assert.match(text, /其他档位的残留路由/)
+      assert.match(text, /commandcode-pro-autosync/)
+      assert.match(text, /属于 Pro 档/)
+      assert.match(text, /72 个模型/)
+      // Above the merged card: the leftovers are what the reader came down here
+      // to find. The tier cards higher up name their providers too, so the
+      // comparison starts at the leftover block rather than at the whole page.
+      const staleAt = text.indexOf('其他档位的残留路由')
+      assert.ok(staleAt >= 0)
+      assert.ok(text.indexOf('Command | goat', staleAt) > staleAt)
+    } finally {
+      useStateValues = []
+    }
+  })
+
+  it('says there is nothing stale rather than drawing an empty block', async () => {
+    useStateValues = statesFor([false, true, null])
+    try {
+      const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+      const tree = component({ ...face })
+      assert.match(textOf(tree).join(' '), /没有其他档位的残留路由/)
+      assert.equal(findByClass(tree, 'ccg-stale').length, 0)
+    } finally {
+      useStateValues = []
+    }
+  })
+
+  it('clears the leftovers through the bridge, then re-reads the routes', async () => {
+    useStateValues = statesFor([false, true, null])
+    const mounted = await mountWithCalls({
+      '/describe': { ...DESCRIBE, stale: [STALE] },
+      '/usage': USAGE,
+      '/prune': { plan: 'goat', removed: ['commandcode-pro-autosync'], kept: ['commandcode-goat-autosync'] },
+    })
+    try {
+      const tab = mounted.registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      const prune = findAll(tab.component({ ...tab.face }), 'button')
+        .find((node) => textOf(node).join('') === '清理残留')
+      assert.ok(prune, 'the leftover block offers a way to clear it')
+
+      await prune.props.onClick()
+      await settle()
+      const call = mounted.calls.find((entry_) => entry_.path === '/prune')
+      assert.ok(call, 'the button posts to /prune')
+      // No plan travels with it: the host removes what its own config calls
+      // stale, not what this card has staged and not saved.
+      assert.deepEqual(JSON.parse(call.body), {})
+      assert.deepEqual(tab.face.store.getSnapshot().prune.result?.removed, ['commandcode-pro-autosync'])
+      // The list that justified the button is the thing that just changed, so
+      // the status is re-read rather than kept.
+      assert.ok(mounted.calls.filter((entry_) => entry_.path === '/describe').length >= 2)
+    } finally {
+      useStateValues = []
+      globalThis.fetch = mounted.originalFetch
     }
   })
 
@@ -455,7 +862,7 @@ describe('rendering', () => {
     const svg = findAll(tree, 'svg')
     assert.equal(svg.length, 1, 'the header mark is one inline svg')
     assert.equal(svg[0].props.viewBox, '0 0 24 24')
-    assert.match(textOf(tree).join(' '), /v0\.4\.0/)
+    assert.match(textOf(tree).join(' '), /v0\.7\.0/)
   })
 
   it('warns when the host half is older than the card', async () => {
@@ -540,8 +947,8 @@ describe('rendering', () => {
 
       // the tier picker is a pill group with exactly the current tier active
       const pills = findAll(tree, 'x-pill')
-      assert.deepEqual(pills.map((node) => node.props.children), ['GOAT', 'Pro', 'Max'])
-      assert.deepEqual(pills.map((node) => node.props.active === true), [true, false, false])
+      assert.deepEqual(pills.map((node) => node.props.children), ['Go', 'GOAT', 'Pro', 'Max'])
+      assert.deepEqual(pills.map((node) => node.props.active === true), [false, true, false, false])
 
       // the sync action is the primary button, and a missing key is a danger tag
       const primary = findAll(tree, 'x-button').find((node) => node.props.variant === 'primary')
@@ -611,7 +1018,113 @@ describe('pure helpers', () => {
     assert.equal(sameList([1, 2], [1, 2]), true)
     assert.equal(sameList([1], [1, 2]), false)
     assert.equal(providerKey('goat', 'openai'), 'commandcode-goat-autosync')
-    assert.deepEqual(PLANS.map((plan) => plan.value), ['goat', 'pro', 'max'])
+    assert.equal(providerKey('goat', 'anthropic'), 'commandcode-goat-anthropic')
+    assert.deepEqual(PLANS.map((plan) => plan.value), ['go', 'goat', 'pro', 'max'])
+    assert.deepEqual(PLANS.map((plan) => plan.title), ['Go', 'GOAT', 'Pro', 'Max'])
+  })
+
+  it('draws one tab per route slot the host reports, in creation order', async () => {
+    const { entry } = await loadBundle()
+    const exports = entry.factory(() => reactShim())
+    const { providerTabs } = exports.__internals
+    // The host states the slots and what to call them; the order is ours, so a
+    // map that arrives shuffled still reads openai, anthropic, responses.
+    const tabs = providerTabs({
+      responses: { key: 'commandcode-goat-responses', channel: 'Responses' },
+      openai: { key: 'commandcode-goat-autosync', channel: 'AutoSync' },
+    })
+    assert.deepEqual(tabs.map((tab) => [tab.slot, tab.label]), [['openai', 'AutoSync'], ['responses', 'Responses']])
+    // a host that names a slot differently is followed, not overridden
+    assert.equal(providerTabs({ openai: { channel: 'Beta' } })[0].label, 'Beta')
+    // one too old to send a channel still gets a label, never a raw slot name
+    assert.equal(providerTabs({ openai: {} })[0].label, 'AutoSync')
+    // a host that reports no targets at all still has three protocols to show
+    assert.deepEqual(providerTabs(undefined).map((tab) => tab.slot), ['openai', 'anthropic', 'responses'])
+    assert.deepEqual(providerTabs(null).map((tab) => tab.slot), ['openai', 'anthropic', 'responses'])
+    // and a slot only that host knows is kept, after the ones we share
+    assert.deepEqual(providerTabs({ openai: {}, gemini: {} }).map((tab) => tab.slot), ['openai', 'gemini'])
+  })
+
+  it('names a tier\u2019s provider from the contract, and derives it without one', async () => {
+    const { entry } = await loadBundle()
+    const exports = entry.factory(() => reactShim())
+    const { providerName, providerDisplayName, planTitle } = exports.__internals
+    assert.equal(providerDisplayName('goat', 'openai'), 'Command | goat')
+    assert.equal(providerDisplayName('goat', 'anthropic'), 'Command | goat · Claude')
+    assert.equal(providerDisplayName('max', 'responses'), 'Command | max · Responses')
+    assert.equal(planTitle('goat'), 'GOAT')
+    assert.equal(planTitle('it-does-not-exist'), 'it-does-not-exist')
+
+    // the tier card's own provider name leads
+    const tiers = [{ plan: 'goat', title: 'GOAT', provider: 'Command | goat' }]
+    assert.equal(providerName({ tiers }, 'goat'), 'Command | goat')
+    // then the name the routes carry, for a host too old to send `tiers`
+    assert.equal(providerName({ targets: { openai: { displayName: 'Command | goat · Claude' } } }, 'goat'), 'Command | goat · Claude')
+    // and failing both, the naming rule this module already mirrors
+    assert.equal(providerName({}, 'max'), 'Command | max')
+  })
+
+  it('renders tier cards from `plans` when the host is too old to send `tiers`', async () => {
+    const { entry } = await loadBundle()
+    const exports = entry.factory(() => reactShim())
+    const { tierList } = exports.__internals
+    const tiers = [{ plan: 'go', title: 'Go' }]
+    assert.deepEqual(tierList({ tiers }), tiers)
+    assert.deepEqual(tierList({ plans: ['go', 'pro'] }).map((tier) => [tier.plan, tier.title]), [['go', 'Go'], ['pro', 'Pro']])
+    assert.deepEqual(tierList({ tiers: [] }), [])
+    assert.deepEqual(tierList(null), [])
+    assert.deepEqual(tierList(undefined), [])
+  })
+
+  it('keeps a tier\u2019s quota in one order and drops what the host did not state', async () => {
+    const { entry } = await loadBundle()
+    const exports = entry.factory(() => reactShim())
+    const { tierQuotaRows, tierVariants } = exports.__internals
+    // order: the price, the two rolling windows, the monthly pool, the premium
+    // half the Max sizes split out
+    assert.deepEqual(
+      tierQuotaRows({ price: 100, fiveHour: 45, weekly: 90, monthly: 150, premiumMonthly: 100 }).map((row) => row.key),
+      ['price', 'fiveHour', 'weekly', 'monthly', 'premiumMonthly'],
+    )
+    // a figure the host omits is left out rather than printed as a zero
+    assert.deepEqual(tierQuotaRows({ price: 10, weekly: 35 }), [{ key: 'price', value: 10 }, { key: 'weekly', value: 35 }])
+    assert.deepEqual(tierQuotaRows({ price: null, monthly: 'x' }), [])
+    assert.deepEqual(tierQuotaRows(undefined), [])
+    // one entry per size, and an entry that is not one is dropped
+    assert.deepEqual(tierVariants({ variants: [{ label: 'Max 10×' }, null, { label: 'Max 20×' }] }).map((variant) => variant.label), ['Max 10×', 'Max 20×'])
+    assert.deepEqual(tierVariants({}), [])
+  })
+
+  it('describes the leftovers of a tier switch without inventing rows', async () => {
+    const { entry } = await loadBundle()
+    const exports = entry.factory(() => reactShim())
+    const { staleRoutes } = exports.__internals
+    const rows = staleRoutes([
+      { key: 'commandcode-pro-autosync', plan: 'pro', slot: 'openai', models: 72 },
+      { key: '', plan: 'go' },
+      { plan: 'goat' },
+      null,
+    ])
+    // the tier title travels with the row, so the card never prints the bare
+    // plan id and leaves the mapping to the reader
+    assert.deepEqual(rows, [{ key: 'commandcode-pro-autosync', plan: 'pro', slot: 'openai', models: 72, title: 'Pro' }])
+    assert.deepEqual(staleRoutes(undefined), [])
+    assert.deepEqual(staleRoutes([]), [])
+  })
+
+  it('knows when the account\u2019s plan and the configured tier disagree', async () => {
+    const { entry } = await loadBundle()
+    const exports = entry.factory(() => reactShim())
+    const { subscriptionMismatch, subscriptionTagText } = exports.__internals
+    const goat = { plan: 'goat', title: 'GOAT', source: 'organization' }
+    assert.equal(subscriptionMismatch(goat, 'pro'), 'goat')
+    assert.equal(subscriptionMismatch(goat, 'goat'), null)
+    assert.equal(subscriptionMismatch(null, 'goat'), null)
+    // a plan id the host could not map is not a mismatch: the account and the
+    // config are not known to disagree, and the card does not guess
+    assert.equal(subscriptionMismatch({ title: 'GOAT' }, 'goat'), null)
+    assert.equal(subscriptionTagText(null, { subscriptionPersonal: (title) => title }), null)
+    assert.equal(subscriptionTagText({ plan: 'goat', title: 'GOAT' }, { subscriptionPersonal: (title) => `${title}!` }), 'GOAT')
   })
 
   it('formats a share at the precision its magnitude deserves', async () => {
@@ -683,5 +1196,66 @@ describe('copy', () => {
       assert.ok(internals.BOOL_COPY[field] !== undefined, `${field} has no label mapping`)
       assert.ok(zh[internals.BOOL_COPY[field]] !== undefined)
     }
+  })
+
+  it('labels every quota figure the tier cards print', async () => {
+    const { dictionaries, internals } = await mountCopy()
+    const zh = dictionaries[NS].zh
+    // A quota row is looked up through this table, so a key without an entry
+    // would put its own name on screen beside a dollar figure.
+    for (const copy of Object.values(internals.QUOTA_COPY)) {
+      assert.ok(zh[copy] !== undefined, `no copy for the ${copy} row`)
+      assert.notEqual(zh[copy], copy)
+    }
+  })
+
+  it('assembles one tier size per line, with the figures the vendor states', async () => {
+    const { dictionaries, internals } = await mountCopy()
+    const t = dictionaries[NS].zh
+    // Max is sold as two sizes: one line each, both on screen.
+    assert.equal(
+      internals.quotaLine(t, { label: 'Max 10×', price: 100, fiveHour: 45, weekly: 90, monthly: 150, premiumMonthly: 100 }),
+      'Max 10× · 月费 $100 / 月 · 5 小时窗口 $45 · 每周窗口 $90 · 月度余额 $150 · 高级额度 $100',
+    )
+    assert.equal(
+      internals.quotaLine(t, { label: 'Max 20×', price: 200, fiveHour: 90, weekly: 180, monthly: 300, premiumMonthly: 200 }),
+      'Max 20× · 月费 $200 / 月 · 5 小时窗口 $90 · 每周窗口 $180 · 月度余额 $300 · 高级额度 $200',
+    )
+    // A tier with no premium pool simply does not mention one.
+    assert.equal(
+      internals.quotaLine(t, { label: 'GOAT', price: 10, fiveHour: 14, weekly: 35, monthly: 70 }),
+      'GOAT · 月费 $10 / 月 · 5 小时窗口 $14 · 每周窗口 $35 · 月度余额 $70',
+    )
+    assert.equal(internals.quotaLine(t, {}), '')
+  })
+
+  it('states a tier\u2019s model count, or says nobody has looked yet', async () => {
+    const { dictionaries, internals } = await mountCopy()
+    const t = dictionaries[NS].zh
+    assert.deepEqual(internals.tierModelLine({ models: 53, live: 53 }, t), { unknown: false, text: '53 个模型，其中 53 个在线' })
+    // A host that counts the catalog but not the live list still answers half
+    // the question, and says only that half.
+    assert.deepEqual(internals.tierModelLine({ models: 53, live: null }, t), { unknown: false, text: '53 个模型' })
+    assert.deepEqual(internals.tierModelLine({ models: null, live: null }, t), { unknown: true, text: t.tierModelsUnknown })
+  })
+
+  it('names the account\u2019s own plan, and only the part the host read', async () => {
+    const { dictionaries, internals } = await mountCopy()
+    const t = dictionaries[NS].zh
+    assert.equal(internals.subscriptionTagText({ plan: 'goat', title: 'GOAT', source: 'organization' }, t), 'GOAT（组织）')
+    assert.equal(internals.subscriptionTagText({ plan: 'goat', title: 'GOAT', source: 'personal' }, t), 'GOAT（个人）')
+    // A title the host stated with no source behind it is repeated without a
+    // claim about which subscription it is.
+    assert.equal(internals.subscriptionTagText({ plan: 'goat', title: 'GOAT' }, t), 'GOAT')
+    // A plan id with no title still names the tier the host mapped it to.
+    assert.equal(internals.subscriptionTagText({ plan: 'max', source: 'personal' }, t), 'Max（个人）')
+  })
+
+  it('tells the reader which tier a leftover route belongs to', async () => {
+    const { dictionaries, internals } = await mountCopy()
+    const t = dictionaries[NS].zh
+    assert.equal(t.staleTier(internals.staleRoutes([{ key: 'commandcode-pro-autosync', plan: 'pro' }])[0].title), '属于 Pro 档')
+    assert.equal(t.pruneResult(2), '已清理 2 条残留路由')
+    assert.equal(t.subscriptionNotice('GOAT', 'Pro'), '账户订阅是 GOAT 档，插件当前写的是 Pro 档。')
   })
 })

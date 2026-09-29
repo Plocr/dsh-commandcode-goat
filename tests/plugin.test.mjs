@@ -9,7 +9,9 @@ import {
   SYNC_TIMEOUT_MS,
   apply,
   normalizeConfig,
+  readCatalog,
 } from '../lib/index.js'
+import { DEFAULT_CATALOG_URL } from '../lib/catalog.js'
 
 const LLM_PI_AI = 'llm-pi-ai'
 const BRIDGE_PREFIX = '/api/dsh-commandcode-goat'
@@ -272,6 +274,7 @@ describe('apply', () => {
     assert.deepEqual(webServer.state.routes.map((route) => route.path), [
       `${BRIDGE_PREFIX}/describe`,
       `${BRIDGE_PREFIX}/sync`,
+      `${BRIDGE_PREFIX}/prune`,
       `${BRIDGE_PREFIX}/usage`,
     ])
     assert.equal(web.state.providers.length, 1)
@@ -308,6 +311,7 @@ describe('apply', () => {
     assert.deepEqual(webServer.state.removed, [
       `${BRIDGE_PREFIX}/describe`,
       `${BRIDGE_PREFIX}/sync`,
+      `${BRIDGE_PREFIX}/prune`,
       `${BRIDGE_PREFIX}/usage`,
     ])
   })
@@ -391,6 +395,33 @@ describe('automatic creation', () => {
       await settle()
     })
     assert.equal(settings.state.mutations.length, 1, 'the flip reaches the next tick')
+  })
+
+  it('never sweeps another tier’s routes from the timer', async (t) => {
+    // Removing a configuration is the button's job. Doing it from a background
+    // tick would delete the other tier behind a reader who is mid-switch, and a
+    // profile composing two rows for two plans would have each row delete the
+    // other's routes the moment it started.
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const settings = mockSettings({
+      entries: [{
+        ns: LLM_PI_AI,
+        revision: 1,
+        value: { providers: { 'commandcode-pro-autosync': { models: [{ id: 'mine' }] } } },
+        schema: { type: 'object', dict: { providers: {} } },
+      }],
+    })
+    const { ctx } = mockContext({ settings })
+    apply(ctx, Config({ plan: 'goat' }))
+    await withFetch(upstreamFetch(), async () => {
+      t.mock.timers.tick(FIRST_SYNC_DELAY_MS)
+      await settle()
+    })
+    assert.ok(settings.state.mutations.length > 0, 'the tier was written')
+    assert.ok(
+      settings.state.mutations.every((mutation) => mutation.ops.every((op) => op.op === 'set')),
+      'and nothing was deleted',
+    )
   })
 
   it('reschedules from the interval as it stands after the tick', async (t) => {
@@ -541,6 +572,189 @@ describe('the sync the bridge drives', () => {
 
   it('bounds its own network work with a timeout signal', () => {
     assert.ok(SYNC_TIMEOUT_MS > 0 && SYNC_TIMEOUT_MS <= 120_000)
+  })
+
+  it('removes the routes of the tier it left behind, and names them in the report', async () => {
+    // Every tier writes its own keys, which is what makes a switch
+    // non-destructive — and also what used to leave the previous tier's
+    // providers in Settings → Models forever, listed under a nearly identical
+    // name, on an account that no longer has that subscription.
+    const settings = mockSettings({
+      entries: [
+        {
+          ns: LLM_PI_AI,
+          revision: 1,
+          value: { providers: { 'commandcode-goat-autosync': { models: [{ id: 'old' }] } } },
+          schema: { type: 'object', dict: { providers: {} } },
+        },
+        // The profile's own default model, pointing at the row about to go.
+        { ns: 'agent-default-model', revision: 1, value: { provider: 'commandcode-goat-autosync', model: 'deepseek/deepseek-v4.1-flash' } },
+      ],
+    })
+    const webServer = mockWebServer()
+    const { ctx } = mockContext({ settings, webServer })
+    apply(ctx, Config({ plan: 'pro' }))
+    const route = webServer.state.routes.find((entry) => entry.path === `${BRIDGE_PREFIX}/sync`)
+
+    const payload = await withFetch(upstreamFetch(), () => drive(route))
+    assert.equal(payload.ok, true)
+    assert.deepEqual(payload.value.pruned, ['commandcode-goat-autosync'])
+    // Deleting the row is only half of it: the profile still names it, and the
+    // reader has to be told which section has to change.
+    assert.match(payload.value.diagnostics.join('\n'), /still refers to a removed provider.*agent-default-model/s)
+    const sweep = settings.state.mutations.at(-1)
+    assert.equal(sweep.ns, LLM_PI_AI)
+    assert.deepEqual(sweep.ops, [{ op: 'unset', path: ['providers', 'commandcode-goat-autosync'] }])
+  })
+
+  it('leaves the other tier alone when the sweep is switched off', async () => {
+    const settings = mockSettings({
+      entries: [{
+        ns: LLM_PI_AI,
+        revision: 1,
+        value: { providers: { 'commandcode-goat-autosync': { models: [{ id: 'old' }] } } },
+        schema: { type: 'object', dict: { providers: {} } },
+      }],
+    })
+    const webServer = mockWebServer()
+    const { ctx } = mockContext({ settings, webServer })
+    apply(ctx, Config({ plan: 'pro', pruneOtherPlans: false }))
+    const route = webServer.state.routes.find((entry) => entry.path === `${BRIDGE_PREFIX}/sync`)
+
+    const payload = await withFetch(upstreamFetch(), () => drive(route))
+    assert.deepEqual(payload.value.pruned, [])
+    assert.ok(settings.state.mutations.every((mutation) => mutation.ops[0].op === 'set'))
+  })
+
+  it('sweeps on request even with nothing to sync', async () => {
+    const settings = mockSettings({
+      entries: [{
+        ns: LLM_PI_AI,
+        revision: 1,
+        value: { providers: { 'commandcode-max-autosync': { models: [{ id: 'ghost' }] } } },
+        schema: { type: 'object', dict: { providers: {} } },
+      }],
+    })
+    const webServer = mockWebServer()
+    const { ctx } = mockContext({ settings, webServer })
+    apply(ctx, Config({ plan: 'goat' }))
+    const route = webServer.state.routes.find((entry) => entry.path === `${BRIDGE_PREFIX}/prune`)
+
+    const payload = await drive(route)
+    assert.equal(payload.ok, true)
+    assert.deepEqual(payload.value.removed, ['commandcode-max-autosync'])
+    assert.equal(payload.value.plan, 'goat')
+  })
+
+  it('describes all four tiers, and the routes of a plan that is not the selected one', async () => {
+    const settings = mockSettings({
+      entries: [{
+        ns: LLM_PI_AI,
+        revision: 1,
+        value: {
+          providers: {
+            'commandcode-goat-autosync': { api: 'openai-completions', displayName: 'Command | goat', models: [{ id: 'a' }, { id: 'b' }] },
+            'commandcode-pro-autosync': { models: [{ id: 'c' }] },
+          },
+        },
+        schema: { type: 'object', dict: { providers: {} } },
+      }],
+    })
+    const webServer = mockWebServer()
+    const { ctx } = mockContext({ settings, webServer })
+    apply(ctx, Config({ plan: 'goat' }))
+    const describeRoute = webServer.state.routes.find((entry) => entry.path === `${BRIDGE_PREFIX}/describe`)
+
+    const payload = await drive(describeRoute)
+    const value = payload.value
+    assert.deepEqual(value.plans, ['go', 'goat', 'pro', 'max'])
+    assert.deepEqual(value.tiers.map((tier) => tier.plan), ['go', 'goat', 'pro', 'max'])
+    // Before the first sync the catalog has not been read, so the counts are
+    // absent rather than zero.
+    assert.deepEqual(value.tiers.map((tier) => tier.models), [null, null, null, null])
+    const goat = value.tiers.find((tier) => tier.plan === 'goat')
+    assert.deepEqual(goat.routes, ['openai'])
+    assert.equal(goat.selected, true)
+    assert.equal(goat.provider, 'Command | goat')
+    // Every field the browser half reads off a tier row, straight from the real
+    // host: a tier card without these renders with no quota, no link and no tag,
+    // and degrades silently rather than failing loudly.
+    assert.deepEqual(goat.variants, [{ label: 'GOAT', price: 10, fiveHour: 14, weekly: 35, monthly: 70 }])
+    assert.equal(goat.docURL, 'https://commandcode.ai/docs/plans/goat')
+    assert.equal(goat.title, 'GOAT')
+    assert.equal(goat.subscribed, false)
+    assert.equal(goat.source, null)
+    assert.deepEqual(value.tiers.find((tier) => tier.plan === 'max').variants.map((variant) => variant.label), ['Max 10×', 'Max 20×'])
+    assert.deepEqual(value.stale, [{ key: 'commandcode-pro-autosync', plan: 'pro', slot: 'openai', models: 1 }])
+    assert.deepEqual(value.targets.openai, {
+      key: 'commandcode-goat-autosync',
+      slot: 'openai',
+      channel: 'AutoSync',
+      api: 'openai-completions',
+      created: true,
+      models: 2,
+      displayName: 'Command | goat',
+    })
+  })
+
+  it('names the tier counts once a sync has read both sources', async () => {
+    const { route } = mount({ plan: 'pro' })
+    await withFetch(upstreamFetch(), () => drive(route('/sync'), '{"dryRun":true}'))
+    const payload = await drive(route('/describe'))
+    const tiers = payload.value.tiers
+    // The fixture catalog holds one Go model and one Pro model, and the live
+    // list serves both.
+    assert.deepEqual(tiers.map((tier) => tier.models), [1, 1, 2, 2])
+    assert.deepEqual(tiers.map((tier) => tier.live), [1, 1, 2, 2])
+  })
+})
+
+describe('readCatalog', () => {
+  it('follows the selected tier’s own page', async () => {
+    const urls = []
+    const result = await withFetch(async (url) => {
+      urls.push(String(url))
+      return { ok: true, status: 200, text: async () => goatPage(CATALOG_ENTRIES) }
+    }, () => readCatalog({ catalogURL: DEFAULT_CATALOG_URL, plan: 'go' }))
+    assert.deepEqual(urls, ['https://commandcode.ai/docs/plans/go'])
+    assert.equal(result.source, 'https://commandcode.ai/docs/plans/go')
+    assert.equal(result.fallbackFrom, undefined)
+    assert.equal(result.entries.length, 2)
+  })
+
+  it('falls back to the page that always states the catalog', async () => {
+    // The Max page publishes no catalog array, and a Max subscriber used to get
+    // an unenriched sync for no reason at all.
+    const urls = []
+    const result = await withFetch(async (url) => {
+      urls.push(String(url))
+      return String(url).endsWith('/max')
+        ? { ok: true, status: 200, text: async () => '<html><body>no payload here</body></html>' }
+        : { ok: true, status: 200, text: async () => goatPage(CATALOG_ENTRIES) }
+    }, () => readCatalog({ catalogURL: DEFAULT_CATALOG_URL, plan: 'max' }))
+    assert.deepEqual(urls, ['https://commandcode.ai/docs/plans/max', 'https://commandcode.ai/docs/plans/goat'])
+    assert.equal(result.source, 'https://commandcode.ai/docs/plans/goat')
+    assert.equal(result.fallbackFrom, 'https://commandcode.ai/docs/plans/max')
+  })
+
+  it('uses a source the reader typed verbatim, without following the tier', async () => {
+    const urls = []
+    await withFetch(async (url) => {
+      urls.push(String(url))
+      return { ok: true, status: 200, text: async () => goatPage(CATALOG_ENTRIES) }
+    }, () => readCatalog({ catalogURL: 'https://mirror.example/catalog', plan: 'max' }))
+    assert.deepEqual(urls, ['https://mirror.example/catalog'])
+  })
+
+  it('reports every candidate it tried when none of them answered', async () => {
+    await assert.rejects(
+      () => withFetch(async () => ({ ok: false, status: 503, statusText: 'Unavailable' }), () => readCatalog({ catalogURL: DEFAULT_CATALOG_URL, plan: 'max' })),
+      (error) => {
+        assert.match(error.message, /docs\/plans\/max/)
+        assert.match(error.message, /docs\/plans\/goat/)
+        return true
+      },
+    )
   })
 })
 

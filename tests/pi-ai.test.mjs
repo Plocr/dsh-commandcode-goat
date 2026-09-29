@@ -8,7 +8,9 @@ import {
   SyncError,
   buildRouteProfile,
   piAiSection,
+  pruneGeneratedRoutes,
   readPiAiValue,
+  sectionsReferencing,
   syncPlan,
   upsertProvider,
 } from '../lib/pi-ai.js'
@@ -79,7 +81,17 @@ describe('buildRouteProfile', () => {
     assert.equal(profile.baseURL, 'https://api.commandcode.ai/provider/v1')
     assert.equal(profile.models, ENTRIES)
     assert.deepEqual(profile.compat, DEFAULT_OPENAI_COMPAT)
-    assert.equal(profile.displayName, 'Command Code GOAT')
+    assert.equal(profile.displayName, 'Command | goat')
+  })
+
+  it('gives the two channels of one tier names a reader can tell apart', () => {
+    // This is the whole point of the naming rule: the harness prints one row per
+    // route, so two routes sharing a name read as one provider listed twice.
+    assert.equal(buildRouteProfile({ key: 'k', route: 'openai', entries: ENTRIES, plan: 'go' }).displayName, 'Command | go')
+    assert.equal(buildRouteProfile({ key: 'k', route: 'anthropic', entries: ENTRIES, plan: 'goat' }).displayName, 'Command | goat · Claude')
+    assert.equal(buildRouteProfile({ key: 'k', route: 'responses', entries: ENTRIES, plan: 'max' }).displayName, 'Command | max · Responses')
+    const names = ['openai', 'anthropic', 'responses'].map((route) => buildRouteProfile({ key: 'k', route, entries: ENTRIES, plan: 'pro' }).displayName)
+    assert.equal(new Set(names).size, names.length)
   })
 
   it('never writes a compat block the protocol does not offer', () => {
@@ -164,7 +176,7 @@ describe('upsertProvider', () => {
 
     assert.equal(result.created, false)
     assert.deepEqual(settings.writes[0].ops, [
-      { op: 'set', path: ['providers', 'commandcode-goat-autosync', 'displayName'], value: 'Command Code GOAT' },
+      { op: 'set', path: ['providers', 'commandcode-goat-autosync', 'displayName'], value: 'Command | goat' },
       { op: 'set', path: ['providers', 'commandcode-goat-autosync', 'models'], value: ENTRIES },
     ])
     const written = settings.value.providers['commandcode-goat-autosync']
@@ -180,6 +192,37 @@ describe('upsertProvider', () => {
     })
     await upsertProvider({ settings, key: 'k', profile: buildRouteProfile({ key: 'k', route: 'openai', entries: ENTRIES, plan: 'goat' }) })
     assert.equal(settings.value.providers.k.displayName, '我的网关')
+  })
+
+  it('renames a route this plugin named before the naming rule, so the upgrade is visible', async () => {
+    // 0.6.x wrote `Command Code GOAT` onto every route of a tier, which is what
+    // made two channels of one subscription read as two identical providers.
+    // A name that is on this plugin's own historical list is therefore
+    // rewritten; a name the reader typed is not.
+    const settings = fakeSettings({
+      value: { providers: { k: { displayName: 'Command Code GOAT', api: 'openai-completions', baseURL: 'x', apiKeyEnv: 'A', models: [] } } },
+    })
+    await upsertProvider({ settings, key: 'k', profile: buildRouteProfile({ key: 'k', route: 'openai', entries: ENTRIES, plan: 'goat' }) })
+    assert.equal(settings.value.providers.k.displayName, 'Command | goat')
+  })
+
+  it('leaves an already-correct generated name out of the write', async () => {
+    const settings = fakeSettings({
+      value: {
+        providers: {
+          k: {
+            displayName: 'Command | goat',
+            api: 'openai-completions',
+            baseURL: 'x',
+            apiKeyEnv: 'A',
+            compat: { thinkingFormat: 'openai', supportsReasoningEffort: true },
+            models: [],
+          },
+        },
+      },
+    })
+    await upsertProvider({ settings, key: 'k', profile: buildRouteProfile({ key: 'k', route: 'openai', entries: ENTRIES, plan: 'goat' }) })
+    assert.deepEqual(settings.writes[0].ops, [{ op: 'set', path: ['providers', 'k', 'models'], value: ENTRIES }])
   })
 
   it('fills in a compat dict schemastery left empty', async () => {
@@ -306,5 +349,116 @@ describe('syncPlan', () => {
       },
     )
     assert.equal(settings.writes.length, 0)
+  })
+})
+
+describe('sectionsReferencing', () => {
+  /** The two sections that name a provider in the profile this plugin runs in. */
+  const profile = {
+    describe: () => [
+      { ns: LLM_PI_AI_NS, value: { providers: {} } },
+      { ns: 'agent-default-model', value: { provider: 'commandcode-goat-autosync', model: 'x' } },
+      { ns: 'subagent-model-selection', value: { allowedModels: [{ provider: 'commandcode-pro-autosync', model: 'y' }] } },
+      { ns: 'ui-theme', value: { preference: 'system' } },
+    ],
+  }
+
+  it('names the sections that still point at a route that was just removed', () => {
+    // Deleting a provider row can strand the profile's default model, and a
+    // dangling provider reference is a model picker that loses its default with
+    // no explanation at all.
+    assert.deepEqual(sectionsReferencing(profile, ['commandcode-goat-autosync']), ['agent-default-model: commandcode-goat-autosync'])
+    assert.deepEqual(
+      sectionsReferencing(profile, ['commandcode-goat-autosync', 'commandcode-pro-autosync']),
+      ['agent-default-model: commandcode-goat-autosync', 'subagent-model-selection: commandcode-pro-autosync'],
+    )
+  })
+
+  it('never reports the provider section it just wrote to', () => {
+    assert.deepEqual(sectionsReferencing({ describe: () => [{ ns: LLM_PI_AI_NS, value: { providers: { 'commandcode-goat-autosync': {} } } }] }, ['commandcode-goat-autosync']), [])
+  })
+
+  it('answers nothing for nothing, and survives a section it cannot read', async () => {
+    assert.deepEqual(sectionsReferencing(profile, []), [])
+    assert.deepEqual(sectionsReferencing(undefined, ['k']), [])
+    const circular = { self: undefined }
+    circular.self = circular
+    assert.deepEqual(sectionsReferencing({ describe: () => [{ ns: 'weird', value: circular }] }, ['k']), [])
+  })
+})
+
+describe('pruneGeneratedRoutes', () => {
+  const providers = {
+    'commandcode-goat-autosync': { models: [{ id: 'a' }] },
+    'commandcode-goat-anthropic': { models: [{ id: 'claude-a' }] },
+    'commandcode-pro-autosync': { models: [{ id: 'a' }, { id: 'b' }] },
+    'commandcode-max-autosync': { models: [{ id: 'a' }] },
+  }
+
+  it('removes the other tiers and keeps the selected one', async () => {
+    const settings = fakeSettings({ value: { providers: { ...providers } } })
+    const result = await pruneGeneratedRoutes({ settings, plan: 'goat' })
+
+    assert.deepEqual(result.removed.sort(), ['commandcode-max-autosync', 'commandcode-pro-autosync'])
+    assert.deepEqual(result.kept.sort(), ['commandcode-goat-anthropic', 'commandcode-goat-autosync'])
+    assert.deepEqual(Object.keys(settings.value.providers).sort(), ['commandcode-goat-anthropic', 'commandcode-goat-autosync'])
+    // One write for the whole sweep, so a partial prune cannot happen.
+    assert.equal(settings.writes.length, 1)
+    assert.deepEqual(settings.writes[0].ops, [
+      { op: 'unset', path: ['providers', 'commandcode-pro-autosync'] },
+      { op: 'unset', path: ['providers', 'commandcode-max-autosync'] },
+    ])
+  })
+
+  it('never touches a route it did not generate', async () => {
+    const settings = fakeSettings({
+      value: {
+        providers: {
+          ...providers,
+          'my-own-gateway': { models: [] },
+          'commandcode-goat-custom': { models: [] },
+          commandcode: { models: [] },
+        },
+      },
+    })
+    const result = await pruneGeneratedRoutes({ settings, plan: 'goat' })
+    assert.deepEqual(result.removed.sort(), ['commandcode-max-autosync', 'commandcode-pro-autosync'])
+    for (const key of ['my-own-gateway', 'commandcode-goat-custom', 'commandcode']) {
+      assert.ok(settings.value.providers[key] !== undefined, `${key} must survive`)
+    }
+  })
+
+  it('reports a route the user customized instead of deleting it', async () => {
+    const settings = fakeSettings({
+      value: {
+        providers: {
+          ...providers,
+          'commandcode-pro-anthropic': { modelOverrides: { 'x/y': { contextWindow: 1000 } }, models: [] },
+        },
+      },
+    })
+    const result = await pruneGeneratedRoutes({ settings, plan: 'goat' })
+    assert.deepEqual(result.protected, ['commandcode-pro-anthropic'])
+    assert.ok(settings.value.providers['commandcode-pro-anthropic'] !== undefined)
+    assert.ok(!result.removed.includes('commandcode-pro-anthropic'))
+  })
+
+  it('writes nothing when there is nothing stale, and limits itself to the keys it is given', async () => {
+    const settings = fakeSettings({ value: { providers: { 'commandcode-goat-autosync': { models: [] } } } })
+    const result = await pruneGeneratedRoutes({ settings, plan: 'goat' })
+    assert.deepEqual(result, { plan: 'goat', removed: [], kept: ['commandcode-goat-autosync'], protected: [] })
+    assert.equal(settings.writes.length, 0)
+
+    const scoped = fakeSettings({ value: { providers: { ...providers } } })
+    const limited = await pruneGeneratedRoutes({ settings: scoped, plan: 'goat', keys: ['commandcode-pro-autosync'] })
+    assert.deepEqual(limited.removed, ['commandcode-pro-autosync'])
+    assert.ok(scoped.value.providers['commandcode-max-autosync'] !== undefined)
+  })
+
+  it('refuses to sweep where there is nowhere to write', async () => {
+    await assert.rejects(
+      () => pruneGeneratedRoutes({ settings: fakeSettings({ registered: false }), plan: 'goat' }),
+      (error) => error.code === SYNC_CODES.noProvider,
+    )
   })
 })

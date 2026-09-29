@@ -38,6 +38,12 @@ const HEALTHY = {
   '/alpha/billing/subscriptions?orgId=org%201': {
     data: { planId: 'individual-pro-v1', status: 'active', currentPeriodEnd: 1_900_000_000 },
   },
+  // The personal subscription underneath the organization's. Both are real at
+  // once, the organization's is the one in force, and the card has to be able
+  // to say which is which.
+  '/alpha/billing/subscriptions': {
+    data: { planId: 'individual-goat', status: 'active' },
+  },
 }
 
 /** Answer the account surface from a fixture keyed by path. */
@@ -102,6 +108,18 @@ describe('fetchUsageReport', () => {
       assert.deepEqual(report.credits.fiveHour, { used: 12, cap: 60, exceeded: false, resetAt: 1_800_000_000_000, remaining: 48 })
       assert.equal(report.credits.weekly.exceeded, true)
       assert.equal(report.credits.monthlyCredits, 1000)
+      // The organization's subscription is the one in force when the account
+      // belongs to one; the personal one underneath is stated, not applied.
+      assert.equal(report.plan.source, 'organization')
+      assert.deepEqual(report.subscription, {
+        plan: 'pro',
+        title: 'Pro',
+        planId: 'individual-pro-v1',
+        status: 'active',
+        source: 'organization',
+        personalPlanId: 'individual-goat',
+        organizationPlanId: 'individual-pro-v1',
+      })
     } finally {
       stub.restore()
     }
@@ -110,7 +128,68 @@ describe('fetchUsageReport', () => {
       '/alpha/usage/summary',
       '/alpha/billing/credits',
       '/alpha/billing/subscriptions?orgId=org%201',
+      '/alpha/billing/subscriptions',
     ])
+  })
+
+  it('states the personal subscription when the account belongs to no organization', async () => {
+    const stub = stubFetch({
+      ...HEALTHY,
+      '/alpha/whoami': { user: { id: 'u1', name: 'Ada' } },
+      '/alpha/billing/subscriptions': { data: { planId: 'individual-go', status: 'active' } },
+    })
+    try {
+      const report = await fetchUsageReport('key', BASE)
+      assert.equal(report.plan.name, 'Go')
+      assert.equal(report.plan.source, 'personal')
+      assert.equal(report.subscription.plan, 'go')
+      assert.equal(report.subscription.organizationPlanId, '')
+      assert.equal(report.subscription.personalPlanId, 'individual-go')
+    } finally {
+      stub.restore()
+    }
+    assert.deepEqual(stub.calls.map((call) => call.path), [
+      '/alpha/whoami',
+      '/alpha/usage/summary',
+      '/alpha/billing/credits',
+      '/alpha/billing/subscriptions',
+    ])
+  })
+
+  it('reads a plan the vendor sells but this build cannot map as an empty tier', async () => {
+    const stub = stubFetch({
+      ...HEALTHY,
+      '/alpha/whoami': { user: { id: 'u1' } },
+      '/alpha/billing/subscriptions': { data: { planId: 'individual-ultra' } },
+    })
+    try {
+      const report = await fetchUsageReport('key', BASE)
+      // The display name still reads; only the tier is unknown, and a guess
+      // there would generate routes the account cannot use.
+      assert.equal(report.subscription.title, 'Ultra')
+      assert.equal(report.subscription.plan, '')
+    } finally {
+      stub.restore()
+    }
+  })
+
+  it('does not let the extra personal call turn a working report into a blocked one', async () => {
+    const stub = stubFetch(HEALTHY, { onCall: () => {} })
+    const original = globalThis.fetch
+    globalThis.fetch = async (url, options) => {
+      if (String(url).endsWith('/alpha/billing/subscriptions')) throw new TypeError('fetch failed')
+      return original(url, options)
+    }
+    try {
+      const report = await fetchUsageReport('key', BASE)
+      assert.deepEqual(report.failures, [])
+      assert.equal(report.blocked, undefined)
+      assert.equal(report.plan.name, 'Pro')
+      assert.equal(report.subscription.personalPlanId, '')
+    } finally {
+      globalThis.fetch = original
+      stub.restore()
+    }
   })
 
   it('degrades one failing endpoint into a note instead of blanking the report', async () => {

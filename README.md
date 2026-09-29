@@ -1,12 +1,12 @@
 # dsh-commandcode-goat
 
-DSH 插件：把 **Command Code 订阅（GOAT / Pro / Max）** 接成 DeepSeek Harness 的模型供应商，并附带账户用量与联网搜索——全部走同一把账户密钥。
+DSH 插件：把 **Command Code 订阅（Go / GOAT / Pro / Max）** 接成 DeepSeek Harness 的模型供应商，并附带账户用量与联网搜索——全部走同一把账户密钥。
 
 ```sh
 dsh plugin --profile web add link:<本仓库根目录>
 ```
 
-安装后重启该 profile。**等十几秒**，`commandcode-goat-autosync` 会自己出现在 **设置 → 模型** 里——进去填上 API 密钥就能用，不需要先找到本插件的卡片。
+安装后重启该 profile。**等十几秒**，`commandcode-goat-autosync` 会自己出现在 **设置 → 模型** 里（名字显示为 `Command | goat`）——进去填上 API 密钥就能用，不需要先找到本插件的卡片。
 
 要改档位、开搜索、看用量时再打开卡片（位置见下文《卡片在哪里》）。
 
@@ -20,7 +20,7 @@ dsh plugin --profile web add link:<本仓库根目录>
 
 这样做的原因是：流式分片、工具调用、思考参数分发、图片处理、历史回放这些逻辑都在 `llm-pi-ai` 里实现并测试过。外部适配器要把同一套协议重新推导一遍，还得跨版本保持正确；而一份 profile 只需要陈述事实——用哪个端点、哪种协议、哪些模型、各自什么能力。
 
-代价是：生成的供应商属于 `llm-pi-ai`，不属于本插件。所以同步必须**幂等且克制**——它只刷新 `models` 列表，绝不覆盖某条路由上已有的 `apiKeyEnv`、`baseURL`、`compat`、`displayName`；你把密钥填在 **设置 → 模型** 里之后，后续每次同步都不会动它。
+代价是：生成的供应商属于 `llm-pi-ai`，不属于本插件。所以同步必须**幂等且克制**——它只刷新 `models` 列表，绝不覆盖某条路由上已有的 `apiKeyEnv`、`baseURL`、`compat`；你把密钥填在 **设置 → 模型** 里之后，后续每次同步都不会动它。`displayName` 是唯一的例外，且只改**本插件自己写过**的名字（`Command | <档位>` 这类，含 0.6.x 的旧名 `Command Code GOAT`）：0.6.x 给同一档位的两条路由起了同一个名字，而 harness 的「设置 → 模型」是**一条路由一行**，于是同名的两行看起来像重复的供应商——这正是 0.7.0 要修掉的显示问题。你自己改过的名字不会被覆盖。
 
 但它不该被藏在一个按钮后面。**`autoSync` 默认开启**：装完重启，插件在十几秒后自己把供应商创建出来，于是 **设置 → 模型** 里有了那一行，也就有了填密钥的地方。这一条是踩出来的——默认关掉时，用户装完插件、重启、打开模型列表，什么都没多出来，插件看起来像装坏了，而不是像在等一个按钮。
 
@@ -31,25 +31,49 @@ dsh plugin --profile web add link:<本仓库根目录>
 | 来源 | 提供什么 | 失败时 |
 |---|---|---|
 | `GET /provider/v1/models` | 实时模型列表，以及**路由真相**——每个模型声明自己支持哪些端点 | 同步失败并报错（没有列表就无从生成） |
-| `commandcode.ai/docs/plans/goat` 页面内嵌的目录 | 列表没有的能力信息：能否思考、是否支持图片、各自的最低订阅档位 | 降级：照常生成，但不写能力、不做档位过滤，并在结果里给出提示 |
+| `commandcode.ai/docs/plans/<档位>` 页面内嵌的目录 | 列表没有的能力信息：能否思考、是否支持图片、各自的最低订阅档位 | 降级：照常生成，但不写能力、不做档位过滤，并在结果里给出提示 |
 
 第二个源是抓取页面的 RSC 载荷（Next.js 的流式数据），不是文档化的 API，所以解析失败只会降级、不会中断同步。
+
+**目录页按档位跟随。** Go、GOAT、Pro 三页内嵌的是同一份目录，Max 页则完全没有这个数组——所以 Max 档会退回到 GOAT 页去读，并在结果里说明自己退回了哪一页，而不是悄悄降级成一次没有能力的同步。你在 `catalogURL` 里自己填的地址不会被跟随逻辑替换。
 
 ---
 
 ## 档位与生成的供应商
 
-档位是**累计包含**的（由目录里的 `minPlanName` 决定，与官方说明一致：Pro 含 GOAT 全部）：
+四档，**累计包含**（由目录里的 `minPlanName` 决定，与官方说明一致）。`Go` 和 `GOAT` 是两个字面前缀相撞的档位，所以判定用的是集合而不是 `startsWith`：Go 订阅者拿不到 GOAT 的模型。
 
-| 档位 | 生成的供应商 | 协议 |
-|---|---|---|
-| `goat` | `commandcode-goat-autosync` | `openai-completions` |
-| `pro` | `commandcode-pro-autosync` + `commandcode-pro-anthropic` | 同上 + `anthropic-messages` |
-| `max` | `commandcode-max-autosync` + `commandcode-max-anthropic` | 同上 |
+| 档位 | 默认额度（5h / 周 / 月） | 价格 | 目录里的模型数 |
+|---|---|---|---|
+| `go` | $3 / $6 / $10 | $1/月 | 53 |
+| `goat` | $14 / $35 / $70 | $10/月 | 63 |
+| `pro` | $16 / $40 / $80 | $20/月 | 77 |
+| `max` | $45 / $90 / $150 + $100（Max 10×）；$90 / $180 / $300 + $200（Max 20×） | $100 / $200 每月 | 85 |
 
-每个档位写自己的供应商，互不覆盖：切换档位后旧档位原样保留，要清理需手动删除。
+这些数字写在 `lib/plans.js` 里，并在卡片上各自附一条官方页面链接——它们是文档中的**默认额度**，账户真实的窗口数值以用量面板（读 `/alpha/*`）为准。模型数由目录实时统计，卡片在第一次同步之前显示「未知」而不是 0。
+
+生成的供应商 key 与显示名：
+
+| 档位 | key | 显示名 | 协议 |
+|---|---|---|---|
+| 任意 | `commandcode-<档位>-autosync` | `Command \| <档位>` | `openai-completions` |
+| 任意 | `commandcode-<档位>-anthropic` | `Command \| <档位> · Claude` | `anthropic-messages` |
+| 任意 | `commandcode-<档位>-responses` | `Command \| <档位> · Responses` | `openai-responses` |
+
+档位 id 一律小写：`Command | go`、`Command | goat`、`Command | pro`、`Command | max`。
 
 **为什么要拆两个路由：** Command Code 对 Claude 系列只在 `/messages`（Anthropic 格式）上服务，把 Claude 的 id 发到 `/chat/completions` 会直接 400。拆分依据是列表里的 `supported_endpoints` 字段——那是网关自己声明的，比按 id 前缀猜要可靠。若某个模型只支持 `/responses`，会生成第三个供应商 `commandcode-<档位>-responses`。
+
+**「只挂载一个」是怎么做到的。** `llm-pi-ai` 的协议是**一条路由一种协议**，而 Claude 只认 `/messages`，所以同一个档位的两条通道在底层必须各自存在——这一点改不了。能改的是**看起来有几个**：
+
+- 插件自己的卡片把两条通道收进**一张**「目标供应商」卡片，内部用页签区分 `AutoSync` / `Anthropic`（截图里那种「两个一模一样的 Command Code GOAT」在卡片上不会再出现）；
+- 两条通道的显示名不同（`Command | goat` 与 `Command | goat · Claude`），所以 harness 自带的「设置 → 模型」里也不再是两行同名条目。那一页由 harness 渲染、一条路由一行，插件无法让它合并成一行——能做的是让两行各自可辨认。
+
+**切换档位会清掉旧档位（只在点「创建 / 更新」时）。** 每个档位写自己的 key，互不覆盖；但账号上只有一个生效订阅，所以旧的档位留下的就是幽灵配置（点进去必然失败，名字还几乎一样）。因此**点「创建 / 更新」**写入新档位之后，插件会**删除本插件生成的、属于其它档位的路由**，并在结果里列出删了哪些。两条边界：只认 `commandcode-<档位>-<通道>` 这种精确形状（你自己起的路由名不会被误删），带 `modelOverrides` 的路由只报告、不删除（那是你手改过的）。不想要这个行为就把 `pruneOtherPlans` 设成 `false`。
+
+后台的自动同步**只写不删**：删除别人的配置是按钮的事，放进定时任务会在你正切换档位时动手；而一个 profile 若组合了两行来分别发布两个档位，两行会在启动时互相删掉对方的路由。
+
+清理会顺手检查**还有没有别处在引用被删掉的路由**（profile 的默认模型行、子代理的模型白名单都会按名字指向某个供应商），有的话在结果里点名是哪一节——否则表现就是「默认模型莫名其妙没了」。
 
 ## 映射规则（上游 → llm-pi-ai）
 
@@ -79,13 +103,17 @@ dsh plugin --profile web add link:<本仓库根目录>
 
 这些端点没有公开文档，是官方 CLI 实际调用的那一组（本仓库用真实服务验证过：无 key 时全部返回 401 而不是 404）。因此每个字段都按「读不到就当没有」处理，原始响应整体保留。
 
+**订阅来源的优先级是「组织 > 个人」。** `/alpha/billing/subscriptions` 返回的是**单个**订阅对象——也就是说同一时刻只有一个生效订阅，不存在两个 Plan 并存的业务状态。唯一的重叠情形是：账号既有个人的订阅，又属于某个组织，而组织自己也有订阅。这时插件用 `?orgId=` 查组织订阅（也就是生效的那个），并在**另一次尽力而为**的调用里读一次个人订阅，只为了能在卡片上说清「生效的是 Max（组织），底下还有一份个人的 GOAT」。这一次额外调用的失败被单独收集，不会把一份完好的报告变成「服务不可用」，也不会影响 `blocked` 的判定。
+
+卡片会把账号订阅的档位标出来（`GOAT（个人）` / `Pro（组织）`）。**它与当前档位不一致时，插件不会自己改档位**——档位只有你手动切换才变，卡片只给出「切换到 Pro」这一个一键修复，避免插件在你没要求的时候改写供应商。
+
 额度以**百分比**呈现：窗口直接给出 `used` / `cap`，月度池则只给出「余额」与「本期已用」，分母由两者相加得出——服务端从不直接给总量。百分比紧跟标签，金额以小字落在同一行右侧。取整按量级走（`0.02%` 不会被抹成 `0%`，`20.4%` 也不需要多余精度）。
 
 这些金额是**美元**，不是请求数。官方字段名写的是 `credits`，但 5 小时上限 14 与每周上限 35 恰好是每月约 70 的**五分之一和二分之一**——一套典型的「月额度 + 滚动节流」设计——而窗口里的 `used` 与该时段内请求的成本一致。所以卡片直接给 `$` 金额，不再写「额度」这种含糊的单位。
 
 面板上任何形如 `a / b` 的数字都会说明 `b` 是什么：请求数是**一个数**（失败时另起一项写「失败 n」），Token 给**总量**，输入/输出拆开写在下面标注清楚。只有在两半都标明的场合才用斜杠。
 
-**每个端点独立降级**：某个端点临时失败只显示一条说明，不会清空整块；只有四个端点以同一方式全失败时，才会指出一个原因（密钥无效 / 服务不可用 / 网络不通）。
+**每个端点独立降级**：某个端点临时失败只显示一条说明，不会清空整块；只有前四个端点以同一方式全失败时，才会指出一个原因（密钥无效 / 服务不可用 / 网络不通）。
 
 模型也可以自己读：插件注册了 `commandcode_usage` 工具（可在卡片里关闭）。
 
@@ -149,7 +177,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 如果你只看到了「已安装」分组里的包名，说明你看的是包列表而不是插件的页面——点开那个组合包，卡片就在详情页上。
 
-卡片的阅读顺序是固定的几块：抬头 → **一行状态**（绿色的「已获取 N 个模型」，以及密钥是否配好）→ 订阅档位 → 账户用量 → 选项 → 「目标供应商」「高级」两个折叠块。每块都是同一个形状：带边框的盒子，第一行是它的标题，右侧放这一块的动作（重新读取 / 创建更新 / 刷新用量）。生成的供应商名字默认折叠——那是排查时才需要的东西，平时只需要知道拿到了多少个模型。
+卡片的阅读顺序是固定的几块：抬头 → **一行状态**（绿色的「已获取 N 个模型」，以及密钥是否配好）→ **订阅档位**（含四档对照卡：各档可用模型数、默认额度、官方文档链接）→ 账户用量 → **选项**（开关＋同一组档位卡）→ **「目标供应商」**（一张合并卡，内部用 `AutoSync` / `Anthropic` 页签切换通道，并列出其它档位残留的路由与一键清理）→「高级」。每块都是同一个形状：带边框的盒子，第一行是它的标题，右侧放这一块的动作（重新读取 / 创建更新 / 刷新用量）。
 
 ## 配置 API 密钥
 
@@ -166,8 +194,8 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `sourceURL` | `https://api.commandcode.ai/provider/v1/models` | 实时模型列表 |
-| `catalogURL` | `https://commandcode.ai/docs/plans/goat` | 能力目录页；抓取失败只降级 |
-| `plan` | `goat` | 档位：`goat` / `pro` / `max` |
+| `catalogURL` | `https://commandcode.ai/docs/plans/goat` | 能力目录页。保持默认时按当前档位跟随（Go / GOAT / Pro 各自那一页），Max 页没有该数组，会自动退回到 GOAT 页并在结果里说明；你自己填的地址则原样使用。抓取失败只降级 |
+| `plan` | `goat` | 档位：`go` / `goat` / `pro` / `max` |
 | `targetApiKeyEnv` | `COMMANDCODE_API_KEY` | 生成的路由读取哪把凭据 |
 | `targetBaseURL` | `https://api.commandcode.ai/provider/v1` | 聊天基地址 |
 | `targetCompat` | `{thinkingFormat: "openai", supportsReasoningEffort: true}` | OpenAI 路由的 compat 覆盖 |
@@ -175,6 +203,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 | `includeReasoningEfforts` | `false` | 为推理模型写入思考档位映射 |
 | `autoSync` | `true` | 首次加载后自动创建一次，并按间隔刷新。关掉则只在卡片里点「创建 / 更新」时写入 |
 | `autoSyncIntervalMs` | `6h`（最小 60s） | 自动同步间隔；改动在下一次排期时生效 |
+| `pruneOtherPlans` | `true` | 点「创建 / 更新」后删除本插件生成的、属于其它档位的路由，并在结果里列出；带 `modelOverrides` 的只报告不删除。后台自动同步不清理 |
 | `webSearch` | `false` | 用本账户提供 `web_search` |
 | `usageBaseURL` | `https://api.commandcode.ai` | `/alpha/*` 用量与搜索的 API 根 |
 | `enableUsageTool` | `true` | 注册 `commandcode_usage` 工具 |
@@ -194,8 +223,14 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 **卡片显示「尚未创建供应商」，点创建没反应？**
 先看卡片里的错误行。常见两类：`fetch-failed`（读不到模型列表，通常是网络或代理）与 `provider-plugin-missing`（该 profile 没加载 `llm-pi-ai`，就没有地方可写）。
 
-**为什么 goat 档没有 `commandcode-goat-anthropic`？**
-该档位不含任何 Claude 模型，所以不会生成 Anthropic 路由——空路由会被 `llm-pi-ai` 拒绝。
+**为什么 goat 档只有一条路由？**
+该档位不含任何 Claude 模型，所以不会生成 Anthropic 路由——空路由会被 `llm-pi-ai` 拒绝。`go` 档同理（Claude 系列最低从 GOAT 档起）。`pro` / `max` 会各生成一条 `commandcode-<档位>-anthropic`。
+
+**「设置 → 模型」里出现了两条几乎同名的 Command Code？**
+那是同一档位的两条通道：`commandcode-goat-autosync`（普通模型）与 `commandcode-goat-anthropic`（Claude 模型，上游只在 `/messages` 上服务它们）。0.7.0 起两条通道的显示名不同（`Command | goat` / `Command | goat · Claude`），本插件卡片里则合并成一张卡、用页签切换。harness 自带的「设置 → 模型」是**一条路由一行**，插件无法让那一页合并——所以名字必须能区分。
+
+**换档位之后，旧的 Command Code 供应商还在？**
+点一次「创建 / 更新」：0.7.0 起它会删掉其它档位残留的路由（`pruneOtherPlans`）。也可以点「目标供应商」区里的一键清理。若仍然残留，检查是不是把这开关关了，或者那条路由带着 `modelOverrides`——它会被保留并在结果里点名。后台自动同步不清理，这是刻意的。
 
 **同步之后模型列表变了，但会话里看不到新模型？**
 设置文件的热重载会生效，但浏览器里的模型选择器可能需要刷新页面。
@@ -204,7 +239,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 插件有**两半**：浏览器半侧（`lib/client.js`）每次打开页面都从磁盘重新读取，宿主半侧（`lib/index.js` 等）只在启动时被 Node `import` 一次。所以 `pnpm update` 之后只刷新页面，会出现「新卡片 + 旧宿主」的混合状态——看起来就像修复没生效。卡片头部会显示宿主的版本号，宿主太旧没上报版本时直接显示 `v?` 并给出提示。这种情况**必须完全退出 DSH Desktop（含托盘）再启动**。
 
 **想改生成供应商的密钥或地址？**
-在 **设置 → 模型** 里直接改。下次同步只刷新 `models`，不会动你写过的 `apiKeyEnv`、`baseURL`、`compat`、`displayName`。反过来，如果某个路由上已经写了 `modelOverrides`，同步会拒绝并说明原因——那两者不能共存，插件不会悄悄覆盖你的配置。
+在 **设置 → 模型** 里直接改。下次同步只刷新 `models`，不会动你写过的 `apiKeyEnv`、`baseURL`、`compat`、`displayName`——唯一的例外是**本插件自己写过的**显示名：0.6.x 的 `Command Code GOAT` 会在下次同步时更新成 `Command | goat`，否则升级后那两条同名的路由会一直留着。反过来，如果某个路由上已经写了 `modelOverrides`，同步会拒绝并说明原因——那两者不能共存，插件不会悄悄覆盖你的配置。
 
 **安全性？**
 卡片调用的三个端点都是 POST-only 且仅限本机回环：校验对端地址、`Host` 头，以及（浏览器发送时）`Origin` 必须与之一致，`Sec-Fetch-Site: cross-site` 直接拒绝。密钥不在浏览器里；用量报告是宿主侧读取后的结果。
@@ -215,7 +250,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 ```sh
 npm install           # 只需要 @deepseek-ai/schemastery（其实就是 dsh 自带的那份）
-npm test              # 163 个用例，全部离线，不需要网络
+npm test              # 242 个用例，全部离线，不需要网络
 npm run verify:live   # 对真实服务跑一遍：模型列表、目录解析、档位统计、端点探活
 ```
 
@@ -224,8 +259,9 @@ npm run verify:live   # 对真实服务跑一遍：模型列表、目录解析�
 ```
 lib/
   index.js     Host 半侧：设置分节、同步编排、自动同步、用量工具、装配
-  catalog.js   纯函数：列表解析、目录解析、路由判定、档位过滤、能力映射
-  pi-ai.js     纯函数：profile 构造 + 带版本栅栏的写入
+  catalog.js   纯函数：列表解析、目录解析、路由判定、档位过滤、能力映射、档位计数
+  plans.js     纯函数：档位元数据（显示名、文档链接、默认额度）、生成 key 的解析
+  pi-ai.js     纯函数：profile 构造 + 带版本栅栏的写入 + 其它档位路由的清理
   usage.js     纯函数：账户端点读取与归一化
   search.js    纯函数：搜索供应商与选择权接管
   bridge.js    回环端点
@@ -265,6 +301,17 @@ tests/
 
 还有一处是设计缺陷、不是版本差异：自动同步的开关和间隔都是 volatile 字段（卡片能就地改），而旧实现把它们的值在挂载时捕获了一次——于是关掉开关要重启 profile 才生效，改间隔同理。0.6.0 改成每次 tick 现读，间隔在下一轮排期生效。
 
+### 0.7.0：Go 档、单一呈现、跨档清理
+
+| 问题 | 0.7.0 的改法 |
+|---|---|
+| 选 `plan: go` 直接抛错 | 目录里的 `minPlanName` 一直有 `Go`，而代码里的档位表没有这一档，于是判定时读到 `undefined.has(...)`。补上 `go` 档，并把「Go 与 GOAT 共享前缀」这件事从字符串前缀改成集合判定 |
+| 「设置 → 模型」里两个一模一样的 `Command Code GOAT` | 同一档位的两条通道曾经共用一个显示名，而那一页是一条路由一行。显示名改为 `Command | <档位>` 与 `Command | <档位> · Claude`（旧名会在下次同步时更新），卡片里则合并成一张带页签的卡片 |
+| 切换档位后旧档位的供应商留在列表里 | 写完之后扫一遍，删除本插件生成的、属于其它档位的路由（精确 key 匹配；带 `modelOverrides` 的只报告） |
+| 卡片里各块挤在一起 | 用了 9 次却从未定义的 `.ccg-cardBody` 补上样式；顺手把主题里并不存在的 `--dsw-alias-bg-layer-4` 换成实际存在的 `--dsw-alias-bg-layer-3` |
+| 个人订阅与组织订阅并存时说不清用的是哪一个 | 额外读一次个人订阅，卡片写明生效档位及其来源，并在与当前档位不一致时给出一键切换（不会自动改） |
+| Max 档同步总是「能力目录读取失败」 | 目录页按档位跟随，失败时退回 GOAT 页并说明 |
+
 这两个改动的取舍是刻意的：**默认自动写一次，比让人先找到按钮更符合「装一个插件」的预期**；而写入本身仍然是幂等的、可见的、可在 **设置 → 模型** 里直接改的。要恢复成「只在点按钮时写」，把 `autoSync` 设成 `false` 即可。
 
 架构参考了 [CJYLZS/dsh-commandcode-provider](https://github.com/CJYLZS/dsh-commandcode-provider)（MIT）——「把模型写进 `llm-pi-ai` 而不是自己写适配器」这个判断来自它，档位拆分、目录抓取、用量面板的做法也是。
@@ -277,23 +324,25 @@ tests/
 - **不抢占显式指定的搜索供应商**。
 - **写入前检查 `modelOverrides` 冲突**，而不是让 `llm-pi-ai` 抛一个难懂的校验错误。
 - **结构化错误码**（`fetch-failed` / `settings-read-only` / `provider-plugin-missing` / `target-has-model-overrides` …），卡片直接展示。
-- **163 个离线用例**，外加一份对真实服务的验证脚本。
+- **242 个离线用例**，外加一份对真实服务的验证脚本。
 
 ---
 
 ## English
 
-Publishes a **Command Code** subscription (GOAT / Pro / Max) as DSH model providers, with account usage and web search on the same credential.
+Publishes a **Command Code** subscription (Go / GOAT / Pro / Max) as DSH model providers, with account usage and web search on the same credential.
 
-It owns no LLM adapter: it writes provider profiles into the first-party `llm-pi-ai` settings section, so streaming, tool calling, reasoning and image handling come from the adapter the harness already ships. Two upstream sources are joined — the live `GET /provider/v1/models` list, which states each model's supported endpoints and is therefore the routing truth, and the capability catalog embedded in the GOAT plan page, which states thinking, vision and minimum plan tier. A dead model list fails the sync; a dead catalog only degrades it.
+It owns no LLM adapter: it writes provider profiles into the first-party `llm-pi-ai` settings section, so streaming, tool calling, reasoning and image handling come from the adapter the harness already ships. Two upstream sources are joined — the live `GET /provider/v1/models` list, which states each model's supported endpoints and is therefore the routing truth, and the capability catalog embedded in the plan page, which states thinking, vision and minimum plan tier. A dead model list fails the sync; a dead catalog only degrades it. The catalog is read from the selected tier's own page, falling back to the GOAT page for Max, whose page publishes no catalog array.
 
-Tiers are cumulative and each writes its own providers, so switching never overwrites the previous tier. Claude models are routed to an `anthropic-messages` provider and everything else to `openai-completions`, decided by the gateway's own `supported_endpoints` rather than an id prefix. Reasoning parameters are blocked for models the vendor marks as non-reasoning, and never invented for the rest.
+Tiers are cumulative and each writes its own providers. Claude models are routed to an `anthropic-messages` provider and everything else to `openai-completions`, decided by the gateway's own `supported_endpoints` rather than an id prefix — which means one tier needs two routes, and no protocol can serve both. What a reader sees is one card: the plugin's own card merges the channels behind tabs, and the routes carry distinct names (`Command | goat`, `Command | goat · Claude`) so the harness's one-row-per-route Models page no longer shows two identical entries. Pressing **Create / Update** then deletes the routes of any *other* tier this plugin generated, so switching a plan leaves no provider behind that the account cannot use; the background auto-sync writes but never deletes. Reasoning parameters are blocked for models the vendor marks as non-reasoning, and never invented for the rest.
 
-The card lives in the sidebar **Plugins** panel — as an entry in the official group, on the bundle's own detail page, and behind the **Configure** control on the bundle's row — plus a tab under **Settings → Plugins**. It shows the generated providers, a live usage dashboard (5-hour and weekly windows, credits, request/cost/token totals) and the account key state. The provider row is created automatically a few seconds after the profile starts (set `autoSync: false` to make every write explicit); the API key is configured on that generated provider in **Settings → Models**, not in the card. Web search is optional and will not displace a provider the deployment named explicitly.
+The account's own subscription is stated beside the configured tier, organization over personal, and a mismatch offers a one-click switch rather than changing anything by itself.
+
+The card lives in the sidebar **Plugins** panel — as an entry in the official group, on the bundle's own detail page, and behind the **Configure** control on the bundle's row — plus a tab under **Settings → Plugins**. It shows a card per tier with its model count, its price and its documented default quota, a merged target-provider card with one tab per channel, a live usage dashboard (5-hour and weekly windows, credits, request/cost/token totals) and the account key state. The provider row is created automatically a few seconds after the profile starts (set `autoSync: false` to make every write explicit); the API key is configured on that generated provider in **Settings → Models**, not in the card. Web search is optional and will not displace a provider the deployment named explicitly.
 
 ```sh
 dsh plugin --profile web add link:<path to this repository>
-npm test            # 163 offline cases
+npm test            # 242 offline cases
 npm run verify:live # probe the real upstreams and account endpoints
 ```
 

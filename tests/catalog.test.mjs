@@ -12,6 +12,8 @@ import {
   routeForModel,
   routeProtocol,
   slugify,
+  tierAvailability,
+  tierCounts,
 } from '../lib/catalog.js'
 
 /** Build a page in the shape the plan page actually serves. */
@@ -158,6 +160,15 @@ describe('buildEntries', () => {
     assert.deepEqual(max.routes.openai.map((entry) => entry.id), ['vendor/model-one', 'vendor/pro-only', 'vendor/top-tier'])
   })
 
+  it('serves a Go subscriber only the Go tier', () => {
+    // `go` is a tier of its own, and it used to be one this build did not know:
+    // selecting it threw inside the membership test instead of selecting less.
+    const go = buildEntries({ apiList, catalog, plan: 'go' })
+    assert.deepEqual(go.routes.openai.map((entry) => entry.id), ['vendor/model-one'])
+    assert.deepEqual(go.routes.anthropic, [])
+    assert.match(go.diagnostics.join(' '), /above the Go tier/)
+  })
+
   it('states capabilities the catalog actually declares', () => {
     const { routes } = buildEntries({ apiList, catalog, plan: 'goat' })
     const [model] = routes.openai
@@ -236,16 +247,85 @@ describe('buildEntries', () => {
 })
 
 describe('planCatalogSummary', () => {
+  const catalog = [
+    CATALOG_ENTRY({ minPlanName: 'Go' }),
+    CATALOG_ENTRY({ minPlanName: 'GOAT' }),
+    CATALOG_ENTRY({ minPlanName: 'Pro' }),
+    CATALOG_ENTRY({ minPlanName: 'Max' }),
+  ]
+
   it('counts cumulatively', () => {
-    const catalog = [
-      CATALOG_ENTRY({ minPlanName: 'Go' }),
-      CATALOG_ENTRY({ minPlanName: 'GOAT' }),
-      CATALOG_ENTRY({ minPlanName: 'Pro' }),
-      CATALOG_ENTRY({ minPlanName: 'Max' }),
-    ]
     assert.equal(planCatalogSummary(catalog, 'goat'), 2)
     assert.equal(planCatalogSummary(catalog, 'pro'), 3)
     assert.equal(planCatalogSummary(catalog, 'max'), 4)
+  })
+
+  it('keeps Go out of GOAT, which the prefix would otherwise lose', () => {
+    // `Go` and `GOAT` are different tiers whose names share a prefix, and a
+    // subscriber to one is not entitled to the other's models.
+    assert.equal(planCatalogSummary(catalog, 'go'), 1)
+  })
+
+  it('counts a tier this build has never heard of towards the top tier only', () => {
+    const future = [...catalog, CATALOG_ENTRY({ minPlanName: 'Ultra' })]
+    assert.equal(planCatalogSummary(future, 'go'), 1)
+    assert.equal(planCatalogSummary(future, 'goat'), 2)
+    assert.equal(planCatalogSummary(future, 'max'), 5)
+  })
+})
+
+describe('tierCounts', () => {
+  it('answers nothing for a catalog that carries no tiers', () => {
+    // A zero here would be a claim that the tier grants nothing, which is a
+    // different statement from "not read yet".
+    assert.equal(tierCounts([]), undefined)
+    assert.equal(tierCounts(undefined), undefined)
+  })
+
+  it('counts every tier in one pass', () => {
+    const catalog = [
+      CATALOG_ENTRY({ minPlanName: 'Go' }),
+      CATALOG_ENTRY({ minPlanName: 'Go' }),
+      CATALOG_ENTRY({ minPlanName: 'GOAT' }),
+      CATALOG_ENTRY({ minPlanName: 'Pro' }),
+    ]
+    assert.deepEqual(tierCounts(catalog), { go: 2, goat: 3, pro: 4, max: 4 })
+  })
+})
+
+describe('tierAvailability', () => {
+  const catalog = [
+    CATALOG_ENTRY({ id: 'vendor/go-model', name: 'Go Model', minPlanName: 'Go' }),
+    CATALOG_ENTRY({ id: 'vendor/goat-model', name: 'Goat Model', minPlanName: 'GOAT' }),
+  ]
+
+  it('states both numbers per tier: what the catalog grants and what is being served', () => {
+    const rows = tierAvailability({
+      catalog,
+      // The GOAT-tier model is announced on the plan page but not served yet.
+      apiList: [{ id: 'vendor/go-model' }],
+    })
+    assert.deepEqual(rows, [
+      { plan: 'go', models: 1, live: 1 },
+      { plan: 'goat', models: 2, live: 1 },
+      { plan: 'pro', models: 2, live: 1 },
+      { plan: 'max', models: 2, live: 1 },
+    ])
+  })
+
+  it('answers null rather than zero for a source that has not been read', () => {
+    assert.deepEqual(tierAvailability({}), [
+      { plan: 'go', models: null, live: null },
+      { plan: 'goat', models: null, live: null },
+      { plan: 'pro', models: null, live: null },
+      { plan: 'max', models: null, live: null },
+    ])
+    assert.deepEqual(tierAvailability({ catalog, apiList: [] })[1], { plan: 'goat', models: 2, live: null })
+  })
+
+  it('counts a model the catalog does not describe against every tier, as the sync does', () => {
+    const rows = tierAvailability({ catalog, apiList: [{ id: 'vendor/go-model' }, { id: 'private/model' }] })
+    assert.deepEqual(rows.map((row) => row.live), [2, 2, 2, 2])
   })
 })
 
