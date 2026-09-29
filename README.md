@@ -115,7 +115,7 @@ dsh plugin --profile web add link:<本仓库根目录>
 
 **每个端点独立降级**：某个端点临时失败只显示一条说明，不会清空整块；只有前四个端点以同一方式全失败时，才会指出一个原因（密钥无效 / 服务不可用 / 网络不通）。
 
-模型也可以自己读：插件注册了 `commandcode_usage` 工具（可在卡片里关闭）。
+模型也可以自己读：插件注册了 `commandcode_usage` 工具（可在卡片里关闭，**改完立即生效**——注销和注册都跟着那次设置写入走）。
 
 ## 联网搜索
 
@@ -245,7 +245,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 在 **设置 → 模型** 里直接改。下次同步只刷新 `models`，不会动你写过的 `apiKeyEnv`、`baseURL`、`compat`、`displayName`——唯一的例外是**本插件自己写过的**显示名：0.6.x 的 `Command Code GOAT` 会在下次同步时更新成 `Command | goat`，否则升级后那两条同名的路由会一直留着。反过来，如果某个路由上已经写了 `modelOverrides`，同步会拒绝并说明原因——那两者不能共存，插件不会悄悄覆盖你的配置。
 
 **安全性？**
-卡片调用的三个端点都是 POST-only 且仅限本机回环：校验对端地址、`Host` 头，以及（浏览器发送时）`Origin` 必须与之一致，`Sec-Fetch-Site: cross-site` 直接拒绝。密钥不在浏览器里；用量报告是宿主侧读取后的结果。
+卡片调用的四个端点都是 POST-only 且仅限本机回环：校验对端地址、`Host` 头，以及（浏览器发送时）`Origin` 必须与之一致，`Sec-Fetch-Site: cross-site` 直接拒绝。密钥不在浏览器里；用量报告是宿主侧读取后的结果。
 
 ---
 
@@ -253,7 +253,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 ```sh
 npm install           # 只需要 @deepseek-ai/schemastery（其实就是 dsh 自带的那份）
-npm test              # 248 个用例，全部离线，不需要网络
+npm test              # 265 个用例，全部离线，不需要网络
 npm run verify:live   # 对真实服务跑一遍：模型列表、目录解析、档位统计、端点探活
 ```
 
@@ -315,6 +315,37 @@ tests/
 | 个人订阅与组织订阅并存时说不清用的是哪一个 | 额外读一次个人订阅，卡片写明生效档位及其来源，并在与当前档位不一致时给出一键切换（不会自动改） |
 | Max 档同步总是「能力目录读取失败」 | 目录页按档位跟随，失败时退回 GOAT 页并说明 |
 
+### 0.7.1：一次审查发现的缺陷，以及向官方设计语言靠拢
+
+审查（宿主半侧、浏览器半侧、数据层各一遍）之后的修法与改动：
+
+| 问题 | 0.7.1 的改法 |
+|---|---|
+| 卡片上所有图标都不显示 | 卡片向 shell 要 `IconRefreshOutline16` / `IconWarningOutline16` / `IconCheckOutline14`，而 `dsh-client-ui-primitives` 从来没有这些名字——它导出的是 `<Subject>OutlineRegular\|Medium`，尺寸是 prop。因为每个调用点都写了「拿不到就渲染 null」，失败是静默的：按钮、告警、状态胶囊全都只是少了图标。改成按真实名字解析，旧拼写留作最后的候选 |
+| 保存成功提示会在写入被拒时也出现 | `configForms` 的 `set`/`unset` 解析出一个布尔值（宿主是否接受这次写入），而卡片只 catch 抛错、把返回值丢了。于是修订冲突、只读部署、`memory` 持久化这些「返回 false 但不抛」的情况一律显示「已保存」，下一次读取再把旧值放回去。现在按返回值判定，失败按字段逐条列出；只读部署另有一句专门的话 |
+| 用量面板把函数源码当错误信息打印 | 字典里 `usageFailed` 写了两次（一次是文案、一次是计数函数），后者覆盖前者，于是「读取失败: …」这行插值出一个函数、原样打印 `(n) => \`失败 ${n}\``。计数改名 `usageFailedCount`。这也是没有密钥时最常见的那一屏 |
+| 宿主版本是 `unknown` 时，重启提示永远不出现、标题写着 `vunknown` | bridge 从不下发缺失的 `version`，它下发字符串 `unknown`。只把「字段不存在」当作未知，于是那条解释「混合状态」的提示不可达。现在 `''` / `unknown` 同样按未知处理，两种提示互斥 |
+| `/describe` 失败时只显示「尚未创建供应商」 | `statusError` 之前只渲染在**折叠着**的「目标供应商」区里。现在和其它失败一样在顶部报出来 |
+| 关掉「注册 commandcode_usage 工具」要重启才生效 | `enableUsageTool` 是 volatile 字段，卡片不重挂插件就能改，而注册只发生在一个挂载时读一次的 `if` 里。改成注册/注销跟着 volatile 事件走（`tools.register` 返回的正是注销器） |
+| 「重新读取」按钮重新读取不了任何东西 | 它调的 `sync()` 只把本地草稿重新读一遍，不会重新问宿主。拆成两个动作：`reload` 重新拉 `/describe` + `/usage`，`discard` 保留给底部「放弃修改」 |
+| 60 秒轮询与卡片开不开无关 | 定时器属于 controller，随插件加载就开跑，唯一的闸门是 `document.hidden`（那是标签页可见性，不是卡片是否打开）。每次 tick 是 5 个上游请求加一次 `/describe`，从不打开插件页的会话也一样发。现在闸门是「卡片根节点在不在 DOM 里」 |
+| 目录读不到时，后台同步会把所有模型都写进当前档位且无人知晓 | 降级本身是刻意的（失败关闭会让一次文档页抖动就整天不更新），但后台 tick 丢掉了报告，日志里也没有痕迹。现在后台 tick 在能力目录不可用时打一条 warn |
+| 切档后清理残留，只报告删了几条 | 带 `modelOverrides` 的路由会被保留——这正是按钮点了却「没删掉」的原因。结果里的 `protected` 以前没人读，现在卡片点名列出 |
+| 账号已选过本插件作为搜索供应商时，卸载会删掉这个选择 | `previous` 只在字段不等于自己时记录，于是部署自己配的 `searchProvider: commandcode` 被当作「我们写的」并在卸载时删除。改为只在真的写入过时才归还 |
+| 目录里没写 `reasoning` 的模型被断言为「不能思考」 | `stated()` 只可能返回布尔：两处都没写时返回 `false`，而 `reasoningEfforts: false` 在 `llm-pi-ai` 里是一条主动断言。改成三态，没人说就不写 |
+| 高级区每个输入框都没有可访问名字 | 标签是兄弟 `<span>`，输入框没有 id。改成官方 `fields.module.css` 的结构：真 `<label for>`、控件带 id、说明用 `aria-describedby` 指过去 |
+| 额外模型 ID 的说明挂在整段末尾 | 它描述的是那一个输入框，现在跟在那个字段下面 |
+| 自动同步间隔不在预设里时，下拉框显示成第一项 | 受控 `<select>` 的 value 匹配不到任何 option 时会显示第一项，于是「15 分钟」读成「1h」。现在把当前值补成一个选项 |
+| `pruneOtherPlans` 在界面上没有入口 | 宿主 schema 里一直有、卡片里一直没暴露，想关掉只能手改组合文件。选项区补上开关 |
+| 卡片在「插件」面板里标题、图标、摘要各出现两次 | 面板自己会先画 20px 的页面标题和这卡片 summary 视图那一行，然后才渲染 page 视图，而卡片又画了一遍自己的标题和介绍。面板的三个席位改为只保留账号档位与版本两个胶囊；「设置 → 插件」那个页签上没有标题，仍用完整头部 |
+| 胶囊、开关、进度条比旁边的官方控件更「方」 | shell 给所有元素套了 superellipse 圆角，而 `border-radius:50%` 和胶囊圆角会被它压变形——官方的 Tag/Pill/Switch/StateDot 都在自己的样式表里写 `corner-shape:round` 退出。卡片补上同样的退出 |
+| 卡片自己发明了一套分段控件 | 档位选择改用 shell 的 `SegmentedControl`，协议通道页签改用 `SegmentedTabs`；shell 不提供这些组件时，回退版本按同一套 token 复刻同样的几何与状态 |
+| 卡片自己的表面色、圆角、字号和 shell 不一致 | 卡片表面换成官方的 settings card 三件套（`settings-card-stroke` / `settings-card-fill` / `radius-xl`），错误文本改用 `--dsw-alias-label-error`（`state-error-primary` 是填充色），硬编码的 9/10px 圆角换成 `--dsw-radius-*`，并补上 `prefers-reduced-motion` 分支 |
+
+另外补了三处防御：窗口的 `cap` 由服务端给出前先判断有限值（NaN 会同时毁掉百分比和进度条宽度）、`modelsFound` 的求和只累加有限值（`undefined` 会让标题在路由存在时显示「尚未创建」）、`usage.js` 的 `num()` 接受数字字符串（把 `"70"` 读成 0 是「你还有额度」这个方向上的错）。
+
+**已知的、刻意保留的取舍**：`successRate` 的百分比/分数二义性（服务实测发百分比，但 0.95 这种值也按分数读，测试固定了两种读法）；能力目录读不到时的降级策略仍是「全部按当前档位处理」。这两处都要么需要上游给单位，要么会把一次文档页抖动放大成整天不更新。
+
 这两个改动的取舍是刻意的：**默认自动写一次，比让人先找到按钮更符合「装一个插件」的预期**；而写入本身仍然是幂等的、可见的、可在 **设置 → 模型** 里直接改的。要恢复成「只在点按钮时写」，把 `autoSync` 设成 `false` 即可。
 
 架构参考了 [CJYLZS/dsh-commandcode-provider](https://github.com/CJYLZS/dsh-commandcode-provider)（MIT）——「把模型写进 `llm-pi-ai` 而不是自己写适配器」这个判断来自它，档位拆分、目录抓取、用量面板的做法也是。
@@ -327,7 +358,7 @@ tests/
 - **不抢占显式指定的搜索供应商**。
 - **写入前检查 `modelOverrides` 冲突**，而不是让 `llm-pi-ai` 抛一个难懂的校验错误。
 - **结构化错误码**（`fetch-failed` / `settings-read-only` / `provider-plugin-missing` / `target-has-model-overrides` …），卡片直接展示。
-- **248 个离线用例**，外加一份对真实服务的验证脚本。
+- **265 个离线用例**，外加一份对真实服务的验证脚本。
 
 ---
 

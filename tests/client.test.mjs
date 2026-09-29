@@ -194,6 +194,12 @@ function requireFor(react, primitives) {
 /**
  * A stand-in for the shell's control set. Each control renders a host element
  * of its own tag so a test can find it and read the props it was handed.
+ *
+ * The icon names are the real ones the primitives package exports — the card
+ * used to ask for `…Outline16`, which no build has ever shipped, so every icon
+ * silently resolved to undefined and the card drew text-only buttons. A shell
+ * with no icon at all is covered by the fallback path (the other tests), and the
+ * legacy spelling has its own test below.
  */
 function primitivesShim(react) {
   const control = (tag) => (props) => react.createElement(tag, props)
@@ -203,9 +209,11 @@ function primitivesShim(react) {
     Switch: control('x-switch'),
     Input: control('x-input'),
     Pill: control('x-pill'),
-    IconRefreshOutline16: control('x-icon-refresh'),
-    IconCordisPluginOutline14: control('x-icon-plugin'),
-    IconWarningOutline16: control('x-icon-warning'),
+    SegmentedControl: control('x-segmented'),
+    SegmentedTabs: control('x-tabs'),
+    IconRefreshOutlineRegular: control('x-icon-refresh'),
+    IconWarningOutlineRegular: control('x-icon-warning'),
+    IconCheckOutlineRegular: control('x-icon-check'),
   }
 }
 
@@ -891,10 +899,175 @@ describe('rendering', () => {
   it('carries its own mark and says which build is loaded', async () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
     const tree = component({ ...face })
-    const svg = findAll(tree, 'svg')
-    assert.equal(svg.length, 1, 'the header mark is one inline svg')
-    assert.equal(svg[0].props.viewBox, '0 0 24 24')
+    // The header's mark is the only svg inside the header; the two disclosures
+    // draw their own chevrons, so counting every svg on the page would pin the
+    // wrong thing.
+    const header = findByClass(tree, 'ccg-head')[0]
+    const mark = findAll(header, 'svg')
+    assert.equal(mark.length, 1, 'the header mark is one inline svg')
+    assert.equal(mark[0].props.viewBox, '0 0 24 24')
+    assert.equal(mark[0].props['aria-hidden'], 'true')
+    // And the disclosures draw a glyph rather than typing one: `▸`/`▾` are font
+    // dependent and are a tofu box on a platform whose UI font lacks them.
+    assert.equal(findByClass(tree, 'ccg-disclosureMark').length, 2)
     assert.match(textOf(tree).join(' '), /v0\.7\.0/)
+  })
+
+  it('treats a host that cannot name its build as the stale host it is', async () => {
+    // The bridge never omits `version`: it forwards the host's own, which falls
+    // back to the literal string `unknown`. Reading only an absent field as
+    // stale left the restart notice unreachable and printed `vunknown` — a
+    // version number that is not one — in exactly the state the notice explains.
+    const unknown = { ...DESCRIBE, version: 'unknown' }
+    const { component, face } = settingsTab(await mount({ '/describe': unknown, '/usage': USAGE }))
+    const text = textOf(component({ ...face })).join(' ')
+    assert.match(text, /宿主半侧没有上报版本/)
+    assert.match(text, /v\?/)
+    assert.doesNotMatch(text, /vunknown/)
+  })
+
+  it('says a refused status read out loud instead of drawing an empty card', async () => {
+    // `state.statusError` used to live only inside the collapsed providers
+    // disclosure, so a failed POST /describe read as "no provider created yet".
+    const { component, face } = settingsTab(await mount({ '/usage': USAGE }))
+    const text = textOf(component({ ...face })).join(' ')
+    assert.match(text, /错误: HTTP 404/)
+  })
+
+  it('heads a failed usage read with a sentence, not with a function', async () => {
+    // Two entries were written under `usageFailed`: the message and a counter.
+    // The counter won, so this headline interpolated a *function* and printed
+    // its source over the panel — in the commonest first-run state there is,
+    // an account with no key stored yet.
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE }))
+    const text = textOf(component({ ...face })).join(' ')
+    assert.match(text, /读取失败: HTTP 404/)
+    assert.doesNotMatch(text, /=>/)
+  })
+
+  it('reads an absent sweep setting the way the host does', async () => {
+    // `pruneOtherPlans` defaults to on in the host schema; a card that read the
+    // same absent field as off would draw the switch unset while the host kept
+    // deleting the previous tier's routes.
+    const { entry, react } = await loadBundle()
+    const exports = entry.factory(requireFor(react, primitivesShim(react)))
+    const { ctx, registrations } = browserContext({
+      scopeValue: { value: { plan: 'goat' }, user: {}, base: {}, revision: 1 },
+    })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      const path = String(url).replace('/api/dsh-commandcode-goat', '')
+      return { ok: true, status: 200, json: async () => ({ ok: true, value: path === '/describe' ? DESCRIBE : USAGE }) }
+    }
+    try {
+      exports.apply(ctx)
+      await settle()
+      const tab = registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      const sweep = findAll(tab.component({ ...tab.face }), 'x-switch')
+        .find((node) => node.props.label === '切档后清理其他档位的路由')
+      assert.ok(sweep, 'the sweep has a switch of its own')
+      assert.equal(sweep.props.checked, true, 'absent means on')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('labels every advanced control, and keeps its hint with it', async () => {
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    useStateValues = statesFor([true, false, null])
+    try {
+      const tree = component({ ...face })
+      const labels = findAll(tree, 'label')
+      const ids = labels.map((node) => node.props.htmlFor)
+      assert.ok(ids.length >= 6, 'every advanced field has a real label')
+      for (const id of ids) assert.match(id, /^ccg-field-/)
+      // The extra-ids sentence describes the extra-ids box, so it sits under it
+      // rather than under all six fields as a section footnote.
+      const extra = findByClass(tree, 'ccg-fieldHint')
+      assert.equal(extra.length, 1)
+      assert.equal(extra[0].props.id, 'ccg-field-extraIds-hint')
+      assert.match(textOf(extra[0]).join(''), /逗号或换行分隔/)
+      assert.equal(labels.find((node) => node.props.htmlFor === 'ccg-field-extraIds').props.children, '额外模型 ID')
+    } finally {
+      useStateValues = []
+    }
+  })
+
+  it('offers an interval the composition states even when it is not a preset', async () => {
+    // A controlled select whose value matches no option silently shows the first
+    // one, so a profile syncing every fifteen minutes would read as "1h".
+    const { entry, react } = await loadBundle()
+    const exports = entry.factory(requireFor(react, primitivesShim(react)))
+    const { ctx, registrations } = browserContext({
+      scopeValue: { value: { plan: 'goat', autoSync: true, autoSyncIntervalMs: 900_000 }, user: {}, base: {}, revision: 1 },
+    })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      const path = String(url).replace('/api/dsh-commandcode-goat', '')
+      return { ok: true, status: 200, json: async () => ({ ok: true, value: path === '/describe' ? DESCRIBE : USAGE }) }
+    }
+    try {
+      exports.apply(ctx)
+      await settle()
+      const tab = registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      // The interval control is a plain `<select>` in both paths, so it is found
+      // by tag rather than through the shell's control set.
+      const node = findAll(tab.component({ ...tab.face }), 'select')[0]
+      assert.equal(node.props.value, '900000')
+      assert.deepEqual(node.props.children.map((option) => option.props.value), [
+        '3600000', '10800000', '21600000', '43200000', '86400000', '900000',
+      ])
+      assert.equal(node.props.children[5].props.children, '15m')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('re-reads the host when the reader asks for a reload', async () => {
+    // The header button says "re-read"; it used to re-read only the local draft,
+    // so pressing it could not change a pixel unless something was typed.
+    const mounted = await mountWithCalls({ '/describe': DESCRIBE, '/usage': USAGE })
+    try {
+      const tab = mounted.registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      const before = mounted.calls.length
+      await tab.face.actions.reload()
+      const after = mounted.calls.slice(before).map((entry_) => entry_.path)
+      assert.ok(after.includes('/describe'), 'a reload asks the host again')
+      assert.ok(after.includes('/usage'))
+      // Discarding a draft is a different action with its own name: it must not
+      // spend a round trip.
+      const mark = mounted.calls.length
+      tab.face.actions.discard()
+      assert.deepEqual(mounted.calls.slice(mark), [])
+    } finally {
+      globalThis.fetch = mounted.originalFetch
+    }
+  })
+
+  it('says which leftovers the sweep refused to remove', async () => {
+    // A route carrying modelOverrides is a hand edit this plugin will not
+    // overwrite. Reporting only the removal count answered "removed 0" while the
+    // row the button named was still on screen.
+    useStateValues = statesFor([false, true, null])
+    const mounted = await mountWithCalls({
+      '/describe': { ...DESCRIBE, stale: [STALE] },
+      '/usage': USAGE,
+      '/prune': { plan: 'goat', removed: [], kept: ['commandcode-goat-autosync'], protected: ['commandcode-pro-autosync'] },
+    })
+    try {
+      const tab = mounted.registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      const prune = findAll(tab.component({ ...tab.face }), 'button')
+        .find((node) => textOf(node).join('') === '清理残留')
+      await prune.props.onClick()
+      await settle()
+      const text = textOf(tab.component({ ...tab.face })).join(' ')
+      assert.match(text, /已清理 0 条残留路由/)
+      assert.match(text, /保留了 commandcode-pro-autosync/)
+      assert.match(text, /modelOverrides/)
+    } finally {
+      useStateValues = []
+      globalThis.fetch = mounted.originalFetch
+    }
   })
 
   it('warns when the host half is older than the card', async () => {
@@ -965,9 +1138,10 @@ describe('rendering', () => {
 
       // one switch per boolean field, each carrying its own accessible name
       const switches = findAll(tree, 'x-switch')
-      assert.equal(switches.length, 4)
+      assert.equal(switches.length, 5)
       assert.deepEqual(switches.map((node) => node.props.label).sort(), [
         '为推理模型写入思考档位',
+        '切档后清理其他档位的路由',
         '注册 commandcode_usage 工具',
         '用本账户提供 web_search',
         '自动创建与同步',
@@ -977,18 +1151,107 @@ describe('rendering', () => {
         assert.equal(typeof node.props.checked, 'boolean')
       }
 
-      // the tier picker is a pill group with exactly the current tier active
-      const pills = findAll(tree, 'x-pill')
-      assert.deepEqual(pills.map((node) => node.props.children), ['Go', 'GOAT', 'Pro', 'Max'])
-      assert.deepEqual(pills.map((node) => node.props.active === true), [false, true, false, false])
+      // the tier picker is the shell's own segmented control, not a pill group
+      // of the card's invention
+      const picker = findAll(tree, 'x-segmented')
+      assert.equal(picker.length, 1, 'the picker is the shell segmented control')
+      assert.deepEqual(picker[0].props.options.map((option) => option.label), ['Go', 'GOAT', 'Pro', 'Max'])
+      assert.deepEqual(picker[0].props.options.map((option) => option.value), ['go', 'goat', 'pro', 'max'])
+      assert.equal(picker[0].props.value, 'goat')
+      assert.equal(typeof picker[0].props.onChange, 'function')
+      assert.equal(findAll(tree, 'x-pill').length, 0, 'no hand-rolled pill group survives')
 
       // the sync action is the primary button, and a missing key is a danger tag
       const primary = findAll(tree, 'x-button').find((node) => node.props.variant === 'primary')
       assert.ok(primary, 'the sync action is a primary button')
       // the icon travels as a prop, not as a child, so it is asserted on the
-      // button that carries it rather than found by walking the tree
-      assert.ok(primary.props.icon !== undefined, 'and it carries an icon')
+      // button that carries it rather than found by walking the tree. Resolving
+      // it proves the card asked for a name this shell actually exports: it used
+      // to ask for `IconRefreshOutline16`, which exists in no build, so the
+      // guard above silently rendered a text-only button.
+      const icon = primary.props.icon
+      assert.equal(typeof icon?.type, 'function', 'and it carries an icon')
+      assert.equal(icon.type(icon.props).type, 'x-icon-refresh', 'the icon is the shell\u2019s own artwork')
       assert.ok(findAll(tree, 'x-tag').some((node) => node.props.tone === 'danger'))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('finds the shell\u2019s icons under the legacy spelling too', async () => {
+    // A shell that ever shipped `…Outline16` still gets its icons: the legacy
+    // name is the last candidate, not the only one.
+    const { entry, react } = await loadBundle()
+    const legacy = (props) => react.createElement('x-icon-legacy', props)
+    const primitives = { ...primitivesShim(react), IconRefreshOutline16: legacy, IconCheckOutline16: legacy }
+    delete primitives.IconRefreshOutlineRegular
+    delete primitives.IconCheckOutlineRegular
+    const exports = entry.factory(requireFor(react, primitives))
+    const { ctx, registrations } = browserContext()
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      const path = String(url).replace('/api/dsh-commandcode-goat', '')
+      const value = path === '/describe' ? DESCRIBE : USAGE
+      return { ok: true, status: 200, json: async () => ({ ok: true, value }) }
+    }
+    try {
+      exports.apply(ctx)
+      await settle()
+      const tab = registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      const tree = tab.component({ ...tab.face })
+      assert.ok(findAll(tree, 'x-icon-legacy').length > 0, 'the legacy export is still found')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('draws the tier picker itself when the shell serves no segmented control', async () => {
+    // The fallback is not a lesser control: same geometry, same tokens, and the
+    // pressed segment is stated to assistive tech.
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    const tree = component({ ...face })
+    const group = findByClass(tree, 'ccg-segments')
+    assert.equal(group.length, 1)
+    assert.equal(group[0].props['aria-label'], '订阅档位')
+    const segments = findByClass(tree, 'ccg-segment')
+    assert.deepEqual(segments.map((node) => textOf(node).join('')), ['Go', 'GOAT', 'Pro', 'Max'])
+    assert.deepEqual(segments.map((node) => node.props['aria-pressed']), [false, true, false, false])
+    segments[0].props.onClick()
+    assert.equal(face.store.getSnapshot().fields.plan, 'go')
+  })
+
+  it('says a refused write instead of claiming the draft was saved', async () => {
+    // `set`/`unset` resolve to a boolean — whether the Host accepted the write.
+    // Awaiting them and discarding the answer is what let the card print
+    // "已保存" over a write that never landed and then put the old values back.
+    const { entry, react } = await loadBundle()
+    const exports = entry.factory(requireFor(react, primitivesShim(react)))
+    const { ctx, registrations, scopeValue } = browserContext({
+      scopeValue: {
+        value: { plan: 'goat', autoSync: false },
+        user: {},
+        base: {},
+        revision: 1,
+      },
+    })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      const path = String(url).replace('/api/dsh-commandcode-goat', '')
+      return { ok: true, status: 200, json: async () => ({ ok: true, value: path === '/describe' ? DESCRIBE : USAGE }) }
+    }
+    try {
+      exports.apply(ctx)
+      await settle()
+      const tab = registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      tab.face.actions.edit('plan', 'pro')
+      assert.equal(tab.face.store.getSnapshot().dirty, true)
+      await tab.face.actions.save()
+      const state = tab.face.store.getSnapshot()
+      assert.notEqual(state.phase, 'saved', 'a refused write is never "saved"')
+      assert.match(String(state.error), /plan/)
+      // Nothing moved: the read-back still describes the section as it stands.
+      assert.equal(state.fields.plan, 'goat')
+      assert.equal(scopeValue.value.plan, 'goat')
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -1075,6 +1338,21 @@ describe('pure helpers', () => {
     assert.deepEqual(providerTabs(null).map((tab) => tab.slot), ['openai', 'anthropic', 'responses'])
     // and a slot only that host knows is kept, after the ones we share
     assert.deepEqual(providerTabs({ openai: {}, gemini: {} }).map((tab) => tab.slot), ['openai', 'gemini'])
+  })
+
+  it('reads a build number, and knows when there is not one', async () => {
+    // The bridge forwards the host's own version, which falls back to the
+    // literal string `unknown` rather than to a missing field — so "absent" is
+    // not the only unknown state, and treating it as the only one made the
+    // restart notice unreachable.
+    const { entry } = await loadBundle()
+    const exports = entry.factory(() => reactShim())
+    const { statusVersion } = exports.__internals
+    assert.equal(statusVersion({ version: '0.7.1' }), '0.7.1')
+    assert.equal(statusVersion({ version: 'unknown' }), undefined)
+    assert.equal(statusVersion({ version: '' }), undefined)
+    assert.equal(statusVersion({}), undefined)
+    assert.equal(statusVersion(undefined), undefined)
   })
 
   it('names a tier\u2019s provider from the contract, and derives it without one', async () => {
