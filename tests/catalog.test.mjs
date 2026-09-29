@@ -194,6 +194,31 @@ describe('buildEntries', () => {
     assert.deepEqual(routes.openai[0].reasoningEfforts, { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' })
   })
 
+  it('says nothing about a model the catalog does not describe', () => {
+    // `llm-pi-ai` reads `reasoningEfforts: false` as "this model cannot think,
+    // never send it a thinking parameter". An entry that states neither the flat
+    // field nor `caps.reasoning` states nothing, and collapsing that silence
+    // into `false` made the vendor's silence into a capability claim in the
+    // negative direction — the one the module's own docs promise never to make.
+    const undeclared = [CATALOG_ENTRY({ reasoning: undefined, vision: undefined, caps: { text: true } })]
+    const { routes } = buildEntries({
+      apiList: [{ id: 'vendor/model-one', name: 'Model One', supportedEndpoints: ['/chat/completions'] }],
+      catalog: undeclared,
+      plan: 'goat',
+    })
+    assert.equal('reasoningEfforts' in routes.openai[0], false)
+    assert.deepEqual(routes.openai[0].input, ['text'])
+
+    // A `caps`-only answer is still an answer, in both directions.
+    const capsOnly = [CATALOG_ENTRY({ reasoning: undefined, caps: { text: true, reasoning: false } })]
+    const off = buildEntries({
+      apiList: [{ id: 'vendor/model-one', name: 'Model One', supportedEndpoints: ['/chat/completions'] }],
+      catalog: capsOnly,
+      plan: 'goat',
+    })
+    assert.equal(off.routes.openai[0].reasoningEfforts, false)
+  })
+
   it('takes the catalog capability over a renamed id, by slug or by name', () => {
     const renamed = [{ id: 'vendor/model-1', name: 'Model One', supportedEndpoints: ['/chat/completions'] }]
     const { routes } = buildEntries({ apiList: renamed, catalog, plan: 'goat' })

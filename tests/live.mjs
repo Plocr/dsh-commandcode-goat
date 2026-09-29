@@ -70,19 +70,38 @@ for (const plan of PLANS) {
 
 console.log('\n== account endpoints exist and are credential-gated ==')
 const bogus = 'cmd_live_probe_invalid'
-for (const path of USAGE_PATHS) {
-  const response = await fetch(`${API_ROOT}${path}`, { headers: usageHeaders(bogus) })
-  check(`${path} is live`, response.status !== 404, `HTTP ${response.status}`)
+/**
+ * One probe, with its own failure reported as a failed check.
+ *
+ * This probe does not tolerate the most likely thing that happens to it: the
+ * account host is a different host from the model list, and a blocked or slow
+ * egress path to it used to take the whole script down with an undici stack
+ * trace — after every earlier check had already passed, which reads as the
+ * plugin's fault rather than the network's.
+ */
+const probe = async (label, request) => {
+  try {
+    const response = await request()
+    check(label, response.status !== 404, `HTTP ${response.status}`)
+  } catch (error) {
+    check(label, false, error instanceof Error ? error.message : String(error))
+  }
 }
-const search = await fetch(`${API_ROOT}${SEARCH_ROUTE}`, {
+for (const path of USAGE_PATHS) {
+  await probe(`${path} is live`, () => fetch(`${API_ROOT}${path}`, { headers: usageHeaders(bogus) }))
+}
+await probe(`${SEARCH_ROUTE} is live`, () => fetch(`${API_ROOT}${SEARCH_ROUTE}`, {
   method: 'POST',
   headers: { ...usageHeaders(bogus), 'content-type': 'application/json' },
   body: JSON.stringify({ query: 'probe', numResults: 1 }),
-})
-check(`${SEARCH_ROUTE} is live`, search.status !== 404, `HTTP ${search.status}`)
+}))
 
-const report = await fetchUsageReport(bogus, API_ROOT)
-check('an invalid key is classified, not thrown', report.blocked === 'invalid-key' || report.failures.length > 0, `blocked=${report.blocked}`)
+try {
+  const report = await fetchUsageReport(bogus, API_ROOT)
+  check('an invalid key is classified, not thrown', report.blocked === 'invalid-key' || report.failures.length > 0, `blocked=${report.blocked}`)
+} catch (error) {
+  check('an invalid key is classified, not thrown', false, error instanceof Error ? error.message : String(error))
+}
 
 console.log(`\n${failures === 0 ? 'all live checks passed' : `${failures} live check(s) failed`}`)
 process.exitCode = failures === 0 ? 0 : 1

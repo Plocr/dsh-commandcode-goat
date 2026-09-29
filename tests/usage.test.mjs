@@ -361,6 +361,51 @@ describe('fetchUsageReport', () => {
       fraction.restore()
     }
   })
+
+  it('reads a figure stated as a JSON string instead of zeroing it', async () => {
+    // Zero is the dangerous direction on this surface: "0 credits" reads as
+    // "you have spent nothing" rather than as "this could not be read".
+    const quoted = stubFetch({
+      '/alpha/usage/summary': { totalCount: '40', failedCount: '2', totalCost: '1.50', successRate: '75' },
+      '/alpha/billing/credits': {
+        credits: { monthlyCredits: '70', purchasedCredits: '0', freeCredits: '0' },
+        windowLimits: { fiveHour: { used: '12.5', cap: '14' } },
+      },
+    })
+    try {
+      const report = await fetchUsageReport('key', BASE)
+      assert.equal(report.usage.totalCount, 40)
+      assert.equal(report.usage.failedCount, 2)
+      assert.equal(report.usage.totalCost, 1.5)
+      assert.equal(report.credits.monthlyCredits, 70)
+      // The window survives rather than collapsing to `used: 0, cap: 0`, which
+      // readWindow would then drop entirely.
+      assert.deepEqual(report.credits.fiveHour, { used: 12.5, cap: 14, exceeded: false, remaining: 1.5 })
+    } finally {
+      quoted.restore()
+    }
+  })
+
+  it('names an unrecognized 200 body as a cause rather than as nothing to report', async () => {
+    // A gateway answering 200 with an error-shaped body used to be counted as a
+    // success, so the report came back with no totals and no failure at all —
+    // indistinguishable from an account that genuinely has nothing.
+    const wrapped = stubFetch({
+      '/alpha/whoami': [],
+      '/alpha/usage/summary': [],
+      '/alpha/billing/credits': [],
+      '/alpha/billing/subscriptions': [],
+    })
+    try {
+      const report = await fetchUsageReport('key', BASE)
+      assert.equal(report.failures.length, 4)
+      assert.match(report.failures[0], /unexpected body/)
+      // No cause is invented for a body that arrived with a 200.
+      assert.equal(report.blocked, undefined)
+    } finally {
+      wrapped.restore()
+    }
+  })
 })
 
 describe('presentation helpers', () => {
@@ -434,6 +479,31 @@ describe('presentation helpers', () => {
     assert.match(line, /5h window: \$0\.004 used of \$14/)
     assert.equal(formatDollars(14), '$14')
     assert.equal(formatDollars(2.652740314), '$2.65')
+  })
+
+  it('states a window with no cap as exactly that, instead of inventing a cap of zero', () => {
+    // The card refuses to draw such a window; the tool used to print
+    // "$12 used of $0", which asserts a limit the vendor never stated.
+    const [line] = creditLines({ fiveHour: { used: 12, cap: 0, exceeded: true } })
+    assert.match(line, /5h window: \$12 used, no cap stated/)
+    assert.match(line, /exceeded/)
+    assert.doesNotMatch(line, /of \$0\b/)
+  })
+
+  it('describes a report assembled elsewhere instead of throwing on it', () => {
+    // Exported, and its own doc comment says it renders reports it did not
+    // fetch: `null` (rather than absent) sections and a missing cost used to
+    // throw or print "NaN%" out of a presentation helper.
+    const text = describeUsage({
+      account: null,
+      plan: null,
+      usage: { totalCount: 5, completedCount: 5, failedCount: 0, periodBasis: 'billing-period' },
+      failures: [],
+    })
+    assert.doesNotMatch(text, /NaN/)
+    assert.match(text, /cost: \$0\.0000 over the billing-period/)
+    assert.match(text, /requests: 5 in this period, 5 completed, success rate 0%/)
+    assert.equal(describeUsage({}), 'the account reported nothing')
   })
 
   it('reads resetAt as milliseconds and never prints the UTC ISO form', () => {

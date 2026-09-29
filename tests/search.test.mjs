@@ -201,13 +201,18 @@ describe('makeSelectionController', () => {
     assert.equal(web.searchProviderId, 'deepseek-official')
   })
 
-  it('is idempotent while it already owns the selection', () => {
+  it('is idempotent while it already owns the selection, and never claims a seat it did not take', () => {
+    // The deployment had already selected this provider (`searchProvider` in the
+    // web config, or DSH_WEB_SEARCH_PROVIDER). Enabling is a no-op and releasing
+    // must leave the field exactly as it was found: deleting it would revert the
+    // deployment's own choice to the default on unload.
     const web = { searchProviderId: SEARCH_PROVIDER_ID }
     const select = makeSelectionController(web)
     assert.equal(select(true), 'taken')
     assert.equal(select(true), 'taken')
+    assert.equal(web.searchProviderId, SEARCH_PROVIDER_ID)
     assert.equal(select(false), 'released')
-    assert.equal('searchProviderId' in web, false)
+    assert.equal(web.searchProviderId, SEARCH_PROVIDER_ID, 'the deployment keeps the choice it made')
   })
 
   it('does not clobber a selection changed while it held the seat', () => {

@@ -23,6 +23,7 @@ const BRIDGE_PREFIX = '/api/dsh-commandcode-goat'
  */
 function mockContext(services = {}) {
   const effects = []
+  const listeners = new Map()
   const ctx = {
     logger: { info() {}, warn() {}, debug() {} },
     // The profile row this plugin was composed under: since dsh 0.1.7 that id
@@ -42,7 +43,13 @@ function mockContext(services = {}) {
       mountedEffects.push(dispose)
       return () => dispose?.()
     },
-    on() {},
+    on(event, handler) {
+      listeners.set(event, [...listeners.get(event) ?? [], handler])
+    },
+    /** Fire an event the way the loader does when a volatile field changes. */
+    emit(event) {
+      for (const handler of listeners.get(event) ?? []) handler()
+    },
   }
   return { ctx, effects }
 }
@@ -95,10 +102,22 @@ function mockWeb({ selected } = {}) {
   return web
 }
 
-/** The tool registry, recording definitions. */
+/** The tool registry, recording definitions and honouring the disposer. */
 function mockTools() {
-  const state = { tools: [] }
-  return { state, register: (definition) => state.tools.push(definition) }
+  const state = { tools: [], disposals: 0 }
+  return {
+    state,
+    register: (definition) => {
+      state.tools.push(definition)
+      // `tools.register` returns "the exact disposer that unregisters the tool";
+      // the stub returns one too, or nothing could ever be released.
+      return () => {
+        state.disposals += 1
+        const index = state.tools.indexOf(definition)
+        if (index >= 0) state.tools.splice(index, 1)
+      }
+    },
+  }
 }
 
 /** Run `body` with a stubbed `fetch`, restoring it afterwards. */
@@ -344,6 +363,38 @@ describe('apply', () => {
     const { ctx } = mockContext({ settings: mockSettings(), tools })
     apply(ctx, Config({ enableUsageTool: false }))
     assert.equal(tools.state.tools.length, 0)
+  })
+
+  it('registers and releases the usage tool as its switch moves', () => {
+    // The switch is a volatile field: the card writes it without remounting the
+    // plugin. A registration decided once at mount kept offering the tool after
+    // the reader switched it off — the switch said one thing and the model's
+    // tool list another, and the account kept paying for calls the user had
+    // declined. Only a restart used to reconcile the two.
+    const tools = mockTools()
+    const { ctx, effects } = mockContext({ settings: mockSettings(), tools })
+    // Volatile fields arrive as live references, so mutating this object is
+    // exactly what a settings write does to a running instance.
+    const config = Config({ enableUsageTool: true })
+    apply(ctx, config)
+    assert.equal(tools.state.tools.length, 1)
+
+    config.enableUsageTool = false
+    ctx.emit('loader/volatile-update')
+    assert.equal(tools.state.tools.length, 0, 'off means off, without a restart')
+    assert.equal(tools.state.disposals, 1)
+
+    // A repeat of the same value must not register a second copy, and must not
+    // release anything: the registry refuses duplicate names.
+    ctx.emit('loader/volatile-update')
+    assert.equal(tools.state.disposals, 1)
+
+    config.enableUsageTool = true
+    ctx.emit('loader/volatile-update')
+    assert.equal(tools.state.tools.length, 1, 'and back on again')
+
+    for (const effect of [...effects].reverse()) effect.dispose?.()
+    assert.equal(tools.state.tools.length, 0, 'unload releases the registration')
   })
 })
 
