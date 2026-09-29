@@ -22,36 +22,66 @@ const check = (label, ok, detail = '') => {
 }
 
 console.log('== live model list ==')
-const apiList = await fetchModelList(`${API_ROOT}/provider/v1/models`)
-check('the model list answers with models', apiList.length > 0, `${apiList.length} models`)
-const routed = apiList.filter((model) => model.supportedEndpoints !== undefined)
-check('entries state their supported endpoints', routed.length === apiList.length, `${routed.length}/${apiList.length}`)
+/**
+ * Read one upstream source, retrying a connection that the network drops.
+ *
+ * Both hosts are behind the same flaky edge, and this script exists to be run
+ * by hand: a transient connect timeout used to end it with an undici stack
+ * trace before any check had been reported, which reads as a broken plugin
+ * rather than as a bad minute. The retries are for the network, not for the
+ * assertions — a source that never answers still fails the checks that need it.
+ */
+const read = async (label, fn, attempts = 4) => {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fn()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (attempt === attempts) {
+        console.log(`      ${label}: gave up after ${attempts} attempts — ${message}`)
+        return undefined
+      }
+      console.log(`      ${label}: attempt ${attempt} failed — ${message}`)
+      await new Promise((resolve) => setTimeout(resolve, 2000 * attempt))
+    }
+  }
+  return undefined
+}
+
+const apiList = await read('model list', () => fetchModelList(`${API_ROOT}/provider/v1/models`))
+check('the model list answers with models', (apiList?.length ?? 0) > 0, `${apiList?.length ?? 0} models`)
+const routed = (apiList ?? []).filter((model) => model.supportedEndpoints !== undefined)
+check('entries state their supported endpoints', routed.length === (apiList?.length ?? 0), `${routed.length}/${apiList?.length ?? 0}`)
 const protocols = {}
-for (const model of apiList) {
+for (const model of apiList ?? []) {
   const route = routeForModel(model)
   protocols[route] = (protocols[route] ?? 0) + 1
 }
 console.log(`      routing: ${JSON.stringify(protocols)}`)
-check('every model routes somewhere', Object.values(protocols).reduce((total, count) => total + count, 0) === apiList.length)
+check('every model routes somewhere', Object.values(protocols).reduce((total, count) => total + count, 0) === (apiList?.length ?? 0))
 
 console.log('\n== live capability catalog ==')
-let catalog = []
-try {
-  catalog = await fetchCatalog('https://commandcode.ai/docs/plans/goat')
-  check('the plan page yields a catalog', catalog.length > 0, `${catalog.length} entries`)
+const catalog = (await read('plan page', () => fetchCatalog('https://commandcode.ai/docs/plans/goat'))) ?? []
+check('the plan page yields a catalog', catalog.length > 0, `${catalog.length} entries`)
+if (catalog.length > 0) {
   const tiers = {}
   for (const entry of catalog) tiers[entry.minPlanName] = (tiers[entry.minPlanName] ?? 0) + 1
   console.log(`      tiers: ${JSON.stringify(tiers)}`)
   const vision = catalog.filter((entry) => entry.vision === true).length
   const reasoning = catalog.filter((entry) => entry.reasoning === true).length
   console.log(`      vision: ${vision}, reasoning: ${reasoning}`)
-} catch (error) {
-  check('the plan page yields a catalog', false, String(error))
+  // The vendor's own statement that a model costs nothing right now, and the
+  // name the picker will show it under.
+  const deals = catalog.filter((entry) => entry.deal !== null && entry.deal !== undefined)
+  const free = deals.filter((entry) => entry.deal.free === true)
+  console.log(`      deals: ${deals.length} (${free.length} free) — ${deals.map((entry) => `${entry.name}: ${entry.deal.label}`).join(', ')}`)
+  const marked = buildEntries({ apiList: apiList ?? [], catalog, plan: 'goat' }).routes.openai.filter((entry) => / · /.test(entry.name ?? ''))
+  check('a model on a deal carries the vendor\u2019s label in its name', free.length === 0 || marked.length >= free.length, `${marked.length} marked: ${marked.slice(0, 4).map((entry) => entry.name).join(', ')}`)
 }
 
 console.log('\n== generated routes per tier ==')
 for (const plan of PLANS) {
-  const { routes, diagnostics } = buildEntries({ apiList, catalog, plan, extraIds: [] })
+  const { routes, diagnostics } = buildEntries({ apiList: apiList ?? [], catalog, plan, extraIds: [] })
   const described = ['openai', 'anthropic', 'responses']
     .filter((route) => routes[route].length > 0)
     .map((route) => `${providerKey(plan, route)}=${routes[route].length}`)

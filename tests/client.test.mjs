@@ -427,6 +427,9 @@ describe('rendering', () => {
       variants: [{ label: 'GOAT', price: 10, fiveHour: 14, weekly: 35, monthly: 70 }],
       models: 43,
       live: 43,
+      // Four of the served models carry the vendor's `deal.free`, so the tier
+      // line states the count beside the two it already had.
+      free: 4,
       selected: true,
       subscribed: true,
       source: 'organization',
@@ -440,6 +443,8 @@ describe('rendering', () => {
       variants: [{ label: 'Pro', price: 20, fiveHour: 16, weekly: 40, monthly: 80 }],
       models: 61,
       live: 60,
+      // None free, and the card says nothing rather than "0 free".
+      free: 0,
       selected: false,
       subscribed: false,
       source: null,
@@ -731,9 +736,17 @@ describe('rendering', () => {
     assert.match(text, /5 小时窗口 \$14/)
     assert.match(text, /每周窗口 \$35/)
     assert.match(text, /月度余额 \$70/)
-    assert.match(text, /43 个模型，其中 43 个在线/)
+    // Free models are counted here, and marked individually on their own names
+    // in the model picker — the count is what the card can state without
+    // listing them.
+    assert.match(text, /43 个模型，其中 43 个在线 · 4 个免费/)
     assert.doesNotMatch(text, /\$100 \/ 月/, 'a tier nobody selected states nothing')
     assert.doesNotMatch(text, /Max 20×/)
+    // A tier with no free models says nothing about them: "0 个免费" reads as
+    // "none exist" rather than as "none right now".
+    face.actions.edit('plan', 'pro')
+    assert.match(textOf(component({ ...face })).join(' '), /61 个模型，其中 60 个在线/)
+    assert.doesNotMatch(textOf(component({ ...face })).join(' '), /个免费/)
     // A tier nobody has synced yet says so instead of printing a zero.
     face.actions.edit('plan', 'max')
     assert.match(textOf(component({ ...face })).join(' '), /这档有多少模型，要等第一次同步读过目录才知道。/)

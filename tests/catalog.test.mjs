@@ -3,8 +3,10 @@ import { describe, it } from 'node:test'
 
 import {
   buildEntries,
+  dealLabel,
   fetchCatalog,
   fetchModelList,
+  isFreeModel,
   parseCatalogPayload,
   parseModelListPayload,
   planCatalogSummary,
@@ -194,6 +196,52 @@ describe('buildEntries', () => {
     assert.deepEqual(routes.openai[0].reasoningEfforts, { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' })
   })
 
+  it('marks a model the vendor has put on a deal, in its name', () => {
+    // The name is the only field a model picker shows — one line per model — so
+    // it is the only place a reader can see, at the moment of choosing, that a
+    // model costs nothing. The vendor states it structurally; the label is
+    // passed through verbatim because it is already written for a reader and it
+    // is the only wording that covers a partial discount honestly.
+    const free = [CATALOG_ENTRY({ deal: { label: 'Free', free: true, discountPercent: 100, term: 'while the stealth preview lasts' } })]
+    const freeEntries = buildEntries({
+      apiList: [{ id: 'vendor/model-one', name: 'Model One', supportedEndpoints: ['/chat/completions'] }],
+      catalog: free,
+      plan: 'goat',
+    })
+    assert.equal(freeEntries.routes.openai[0].name, 'Model One · Free')
+
+    const discounted = [CATALOG_ENTRY({ deal: { label: '99% off', free: false, discountPercent: 99 } })]
+    const discountedEntries = buildEntries({
+      apiList: [{ id: 'vendor/model-one', name: 'Model One', supportedEndpoints: ['/chat/completions'] }],
+      catalog: discounted,
+      plan: 'goat',
+    })
+    assert.equal(discountedEntries.routes.openai[0].name, 'Model One · 99% off')
+
+    // No deal, or a deal that states no label: the name is left exactly as the
+    // vendor wrote it rather than gaining a marker this module made up.
+    for (const entry of [CATALOG_ENTRY({ deal: null }), CATALOG_ENTRY({ deal: {} }), CATALOG_ENTRY({ deal: { discountPercent: 10 } })]) {
+      const { routes } = buildEntries({
+        apiList: [{ id: 'vendor/model-one', name: 'Model One', supportedEndpoints: ['/chat/completions'] }],
+        catalog: [entry],
+        plan: 'goat',
+      })
+      assert.equal(routes.openai[0].name, 'Model One')
+    }
+  })
+
+  it('reads the deal the way it reads every other capability: absent means unstated', () => {
+    assert.equal(dealLabel(CATALOG_ENTRY({ deal: { label: 'Free', free: true } })), 'Free')
+    // A free flag with no label still gets the vendor's own word for it.
+    assert.equal(dealLabel(CATALOG_ENTRY({ deal: { free: true } })), 'Free')
+    // A label with no free flag is a discount, and is not called free.
+    assert.equal(isFreeModel(CATALOG_ENTRY({ deal: { label: '50% off', free: false } })), false)
+    assert.equal(dealLabel(CATALOG_ENTRY({ deal: null })), undefined)
+    assert.equal(dealLabel(CATALOG_ENTRY({})), undefined)
+    assert.equal(dealLabel(undefined), undefined)
+    assert.equal(isFreeModel(undefined), false)
+  })
+
   it('says nothing about a model the catalog does not describe', () => {
     // `llm-pi-ai` reads `reasoningEfforts: false` as "this model cannot think,
     // never send it a thinking parameter". An entry that states neither the flat
@@ -331,21 +379,39 @@ describe('tierAvailability', () => {
       apiList: [{ id: 'vendor/go-model' }],
     })
     assert.deepEqual(rows, [
-      { plan: 'go', models: 1, live: 1 },
-      { plan: 'goat', models: 2, live: 1 },
-      { plan: 'pro', models: 2, live: 1 },
-      { plan: 'max', models: 2, live: 1 },
+      { plan: 'go', models: 1, live: 1, free: 0 },
+      { plan: 'goat', models: 2, live: 1, free: 0 },
+      { plan: 'pro', models: 2, live: 1, free: 0 },
+      { plan: 'max', models: 2, live: 1, free: 0 },
     ])
+  })
+
+  it('counts the free models each tier is being served, and only the free ones', () => {
+    // The deal is the vendor's own statement, in the same object it publishes
+    // the model's capabilities in: `{ label, free, discountPercent, term }`.
+    const deals = [
+      CATALOG_ENTRY({ id: 'vendor/go-model', name: 'Go Model', minPlanName: 'Go', deal: { label: 'Free', free: true, discountPercent: 100, term: 'while it lasts' } }),
+      CATALOG_ENTRY({ id: 'vendor/goat-model', name: 'Goat Model', minPlanName: 'GOAT', deal: { label: '50% off', free: false, discountPercent: 50 } }),
+      CATALOG_ENTRY({ id: 'vendor/pro-model', name: 'Pro Model', minPlanName: 'Pro', deal: null }),
+    ]
+    const rows = tierAvailability({
+      catalog: deals,
+      apiList: [{ id: 'vendor/go-model' }, { id: 'vendor/goat-model' }, { id: 'vendor/pro-model' }],
+    })
+    // One free model, which every tier grants; the discounted one is not free.
+    assert.deepEqual(rows.map((row) => row.free), [1, 1, 1, 1])
+    // And a model announced but not served is not counted either way.
+    assert.deepEqual(tierAvailability({ catalog: deals, apiList: [{ id: 'vendor/pro-model' }] }).map((row) => row.free), [0, 0, 0, 0])
   })
 
   it('answers null rather than zero for a source that has not been read', () => {
     assert.deepEqual(tierAvailability({}), [
-      { plan: 'go', models: null, live: null },
-      { plan: 'goat', models: null, live: null },
-      { plan: 'pro', models: null, live: null },
-      { plan: 'max', models: null, live: null },
+      { plan: 'go', models: null, live: null, free: null },
+      { plan: 'goat', models: null, live: null, free: null },
+      { plan: 'pro', models: null, live: null, free: null },
+      { plan: 'max', models: null, live: null, free: null },
     ])
-    assert.deepEqual(tierAvailability({ catalog, apiList: [] })[1], { plan: 'goat', models: 2, live: null })
+    assert.deepEqual(tierAvailability({ catalog, apiList: [] })[1], { plan: 'goat', models: 2, live: null, free: null })
   })
 
   it('counts a model the catalog does not describe against every tier, as the sync does', () => {

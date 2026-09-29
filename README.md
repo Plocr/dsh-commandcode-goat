@@ -253,7 +253,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 ```sh
 npm install           # 只需要 @deepseek-ai/schemastery（其实就是 dsh 自带的那份）
-npm test              # 269 个用例，全部离线，不需要网络
+npm test              # 272 个用例，全部离线，不需要网络
 npm run verify:live   # 对真实服务跑一遍：模型列表、目录解析、档位统计、端点探活
 ```
 
@@ -358,6 +358,31 @@ tests/
 
 另外：「高级」区 6 个字段的说明现在各自跟着自己的字段走，不再全部堆在区段末尾；档位卡跟着**草稿**走（选 Pro 立刻显示 Pro），而「当前档位」这个标签仍以宿主真正写入的配置为准——两者短暂不一致时，标签的缺席就是在说「还没保存」。
 
+### 0.7.3：把「免费」写到模型名字里
+
+官方目录里有一部分模型带 `deal`，这是厂商给出的**结构化**字段，不是从价格猜的：
+
+```json
+"deal": {
+  "label": "Free", "free": true, "discountPercent": 100,
+  "term": "while the stealth preview lasts",
+  "note": "Free while the stealth preview lasts. Every request is billed $0.",
+  "href": "https://commandcode.ai/docs/resources/pricing-limits#space-bunny-alpha-free"
+}
+```
+
+写这份文档时，85 条目录里有 8 条带 deal：5 条 `free: true`（4 条在线服务），3 条是 `50% off` / `99% off` / `98% off`。**没有**「成本为 0 但没有 deal」的条目，所以这个字段就是全部信号。
+
+问题在于这个事实出现在**切换模型的那一刻**，而模型选择器每个模型只显示一行——就是 `name`。所以标识只能写在名字里：
+
+| 改动 | 说明 |
+|---|---|
+| 名字带上厂商自己的 `deal.label` | `Space Bunny Alpha · Free`、`MiMo V2.5 Pro · 99% off`。用厂商的原文而不是自己造词：`99% off` 不是「免费」，把它写成免费就是替厂商下了一个它没下的结论。分隔符沿用已有的 `Command \| goat · Claude` 风格 |
+| 档位卡多一个计数 | `63 个模型，其中 62 个在线 · 4 个免费`。为 0 时**不写**——「0 个免费」读起来是「根本没有」，而事实是「现在没有」。个别模型的名字已经在选择器里各自说明了 |
+| 没有 deal 就不加任何东西 | 厂商没说，插件也不说；这条与目录里 `reasoning` / `vision` 的处理一致 |
+
+副作用（已知）：选中的模型名会带着标记出现在输入框旁边。想改字面量只在一处：`catalog.js` 里 append 的那一行。
+
 **已知的、刻意保留的取舍**：`successRate` 的百分比/分数二义性（服务实测发百分比，但 0.95 这种值也按分数读，测试固定了两种读法）；能力目录读不到时的降级策略仍是「全部按当前档位处理」。这两处都要么需要上游给单位，要么会把一次文档页抖动放大成整天不更新。
 
 这两个改动的取舍是刻意的：**默认自动写一次，比让人先找到按钮更符合「装一个插件」的预期**；而写入本身仍然是幂等的、可见的、可在 **设置 → 模型** 里直接改的。要恢复成「只在点按钮时写」，把 `autoSync` 设成 `false` 即可。
@@ -372,7 +397,7 @@ tests/
 - **不抢占显式指定的搜索供应商**。
 - **写入前检查 `modelOverrides` 冲突**，而不是让 `llm-pi-ai` 抛一个难懂的校验错误。
 - **结构化错误码**（`fetch-failed` / `settings-read-only` / `provider-plugin-missing` / `target-has-model-overrides` …），卡片直接展示。
-- **269 个离线用例**，外加一份对真实服务的验证脚本。
+- **272 个离线用例**，外加一份对真实服务的验证脚本。
 
 ---
 
@@ -386,7 +411,7 @@ Tiers are cumulative and each writes its own providers. Claude models are routed
 
 The account's own subscription is stated beside the configured tier, organization over personal, and a mismatch offers a one-click switch rather than changing anything by itself.
 
-The card lives in the sidebar **Plugins** panel — as an entry in the official group, on the bundle's own detail page, and behind the **Configure** control on the bundle's row — plus a tab under **Settings → Plugins**. One tier picker leads it, and the tier it selects is described directly underneath: its model count, its price and its documented default quota. Choosing a tier and pressing **Create / Update** commits that choice first and then writes the routes, so the button acts on the tier the picker is showing rather than the one that was saved before. Under that are a merged target-provider card with one tab per channel, a live usage dashboard (5-hour and weekly windows, credits, request/cost/token totals) and the account key state. The provider row is created automatically a few seconds after the profile starts (set `autoSync: false` to make every write explicit); the API key is configured on that generated provider in **Settings → Models**, not in the card. Web search is optional and will not displace a provider the deployment named explicitly.
+The card lives in the sidebar **Plugins** panel — as an entry in the official group, on the bundle's own detail page, and behind the **Configure** control on the bundle's row — plus a tab under **Settings → Plugins**. One tier picker leads it, and the tier it selects is described directly underneath: its model count, its price and its documented default quota. Choosing a tier and pressing **Create / Update** commits that choice first and then writes the routes, so the button acts on the tier the picker is showing rather than the one that was saved before. Under that are a merged target-provider card with one tab per channel, a live usage dashboard (5-hour and weekly windows, credits, request/cost/token totals) and the account key state. Models the vendor puts on a deal say so in their own names — `Space Bunny Alpha · Free`, `MiMo V2.5 Pro · 99% off` — because a model picker shows one line per model, and "this costs nothing right now" is exactly the fact a reader cannot see at the moment they are choosing; the tier card carries the count (`4 free`). The provider row is created automatically a few seconds after the profile starts (set `autoSync: false` to make every write explicit); the API key is configured on that generated provider in **Settings → Models**, not in the card. Web search is optional and will not displace a provider the deployment named explicitly.
 
 ```sh
 dsh plugin --profile web add link:<path to this repository>
