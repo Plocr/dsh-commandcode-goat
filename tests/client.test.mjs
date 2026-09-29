@@ -480,6 +480,20 @@ describe('rendering', () => {
     assert.doesNotMatch(text, /\d{6,}d /)
   })
 
+  it('says that a rolling window opens on first use, so its countdown can restart', async () => {
+    // These windows are anchored to the first request after the previous one
+    // elapsed, not to a fixed clock: without the line, a countdown that starts
+    // when someone begins working reads as the card resetting the quota itself.
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    assert.match(textOf(component({ ...face })).join(' '), /窗口由「上一个窗口结束后的第一个请求」开出/)
+    // Nothing to explain when the account reports no capped window.
+    const noWindows = { ...USAGE, credits: { monthlyCredits: USAGE.credits.monthlyCredits, purchasedCredits: 0, freeCredits: 0 } }
+    const bare = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': noWindows }))
+    const bareText = textOf(bare.component({ ...bare.face })).join(' ')
+    assert.match(bareText, /月度余额/)
+    assert.doesNotMatch(bareText, /窗口由/)
+  })
+
   it('states where the key was found instead of contradicting the usage panel', async () => {
     const viaEnvironment = { ...DESCRIBE, keySource: 'environment', apiKeyEnv: 'MY_KEY' }
     const { component, face } = settingsTab(await mount({ '/describe': viaEnvironment, '/usage': USAGE }))

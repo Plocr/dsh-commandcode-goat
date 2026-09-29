@@ -5,7 +5,9 @@ import {
   creditLines,
   describeUsage,
   fetchUsageReport,
+  formatDollars,
   formatDuration,
+  localStamp,
   planNameOf,
   usageHeaders,
   windowPercent,
@@ -304,7 +306,7 @@ describe('presentation helpers', () => {
     const lines = creditLines({ monthlyCredits: 10, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 1, cap: 2, exceeded: false } })
     assert.equal(lines.length, 2)
     // Dollars, not request counts: the caps are round money limits.
-    assert.match(lines[1], /5h window: \$1\.00 used of \$2/)
+    assert.match(lines[1], /5h window: \$1 used of \$2/)
   })
 
   it('writes a summary a model can read', () => {
@@ -330,9 +332,39 @@ describe('presentation helpers', () => {
     assert.match(text, /tokens: 40 total \(30 input, 10 output\)/)
   })
 
-  it('renders a millisecond reset as a real date', () => {
-    const [line] = creditLines({ monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 1, cap: 2, exceeded: false, resetAt: 1789766268634 } })
-    assert.match(line, /resets 2026-09-18T21:17:48\.634Z/)
+  it('leads a window line with its countdown and states the instant absolutely', () => {
+    const resetAt = Date.now() + 5 * 3600 * 1000 + 30 * 1000
+    const [line] = creditLines({ monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 1, cap: 2, exceeded: false, resetAt } })
+    assert.match(line, /5h window: \$1 used of \$2, resets in 5h 0m \(/)
+    // The countdown alone cannot be checked; the local stamp is the same
+    // instant stated so a reader can hold it against a clock.
+    assert.ok(line.includes(localStamp(resetAt)), line)
+  })
+
+  it('states an instant as local wall clock with its own offset', () => {
+    const ms = Date.UTC(2026, 8, 18, 21, 17, 48, 634)
+    const stamp = localStamp(ms)
+    assert.match(stamp, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2}$/)
+    // Reading the stamp back with the offset it carries returns the same
+    // instant (to the second: the stamp states no fraction).
+    assert.equal(Date.parse(stamp.replace(' ', 'T').replace(' ', '')), Math.floor(ms / 1000) * 1000)
+  })
+
+  it('keeps a fraction of a cent visible instead of rounding it to $0.00', () => {
+    const [line] = creditLines({ monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 0.004167961, cap: 14, exceeded: false } })
+    assert.match(line, /5h window: \$0\.004 used of \$14/)
+    assert.equal(formatDollars(14), '$14')
+    assert.equal(formatDollars(2.652740314), '$2.65')
+  })
+
+  it('reads resetAt as milliseconds and never prints the UTC ISO form', () => {
+    // 2026-09-18T21:17:48.634Z. Read as seconds the same field lands in 1970;
+    // printed as ISO it reads as a different time of day east of Greenwich.
+    const resetAt = 1789766268634
+    const [line] = creditLines({ monthlyCredits: 0, purchasedCredits: 0, freeCredits: 0, fiveHour: { used: 1, cap: 2, exceeded: false, resetAt } })
+    assert.ok(line.includes(localStamp(resetAt)), line)
+    assert.doesNotMatch(line, /Z\b/)
+    assert.doesNotMatch(line, /\d{6,}d/)
   })
 
   it('says what is missing rather than reporting nothing', () => {
