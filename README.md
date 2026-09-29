@@ -253,7 +253,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 ```sh
 npm install           # 只需要 @deepseek-ai/schemastery（其实就是 dsh 自带的那份）
-npm test              # 265 个用例，全部离线，不需要网络
+npm test              # 269 个用例，全部离线，不需要网络
 npm run verify:live   # 对真实服务跑一遍：模型列表、目录解析、档位统计、端点探活
 ```
 
@@ -344,6 +344,20 @@ tests/
 
 另外补了三处防御：窗口的 `cap` 由服务端给出前先判断有限值（NaN 会同时毁掉百分比和进度条宽度）、`modelsFound` 的求和只累加有限值（`undefined` 会让标题在路由存在时显示「尚未创建」）、`usage.js` 的 `num()` 接受数字字符串（把 `"70"` 读成 0 是「你还有额度」这个方向上的错）。
 
+### 0.7.2：卡片瘦身——只讲选中的那一档
+
+0.7.1 装上后的第一眼反馈：选项区一次铺开四张档位卡，「看起来很杂乱」，而读者真正选定的那一档反而埋在里面。
+
+| 问题 | 0.7.2 的改法 |
+|---|---|
+| 四张档位卡一起铺开 | 四张变一张：**只画选中的那一档**，并且挪到档位选择器的正下方——选完立刻看到这一档给什么（模型数、月费、两个滚动窗口、月度余额、档位说明链接）。另外三档是选择器的职责，选择器就在上一行 |
+| 同一张档位卡在上面出现四次、在「目标供应商」里又出现一次 | 「目标供应商」不再重复档位卡，那一区只留残留路由与合并后的供应商卡 |
+| 「切换到此档位」按钮与选择器重复 | 只剩一张卡时这个按钮永远不可达，删掉。要切回账户订阅的档位，顶部那条提示里一直有按钮 |
+| 选择器被拉满整行，四个词之间空出一大片 | 分段控件按内容宽度收拢（`align-self`），不再继承卡片列的拉伸 |
+| 选好档位后点「创建 / 更新」，写进去的却是旧档位 | `/sync` 写的是**宿主的**配置，而选择器只暂存草稿：选了 Pro 再点按钮，写下去的是 GOAT，卡片却显示 Pro 的数字。现在这个按钮**先把草稿提交，再写路由**；提交被拒就停下并报错，绝不用一个读者没有选中的档位去覆盖 |
+
+另外：「高级」区 6 个字段的说明现在各自跟着自己的字段走，不再全部堆在区段末尾；档位卡跟着**草稿**走（选 Pro 立刻显示 Pro），而「当前档位」这个标签仍以宿主真正写入的配置为准——两者短暂不一致时，标签的缺席就是在说「还没保存」。
+
 **已知的、刻意保留的取舍**：`successRate` 的百分比/分数二义性（服务实测发百分比，但 0.95 这种值也按分数读，测试固定了两种读法）；能力目录读不到时的降级策略仍是「全部按当前档位处理」。这两处都要么需要上游给单位，要么会把一次文档页抖动放大成整天不更新。
 
 这两个改动的取舍是刻意的：**默认自动写一次，比让人先找到按钮更符合「装一个插件」的预期**；而写入本身仍然是幂等的、可见的、可在 **设置 → 模型** 里直接改的。要恢复成「只在点按钮时写」，把 `autoSync` 设成 `false` 即可。
@@ -358,7 +372,7 @@ tests/
 - **不抢占显式指定的搜索供应商**。
 - **写入前检查 `modelOverrides` 冲突**，而不是让 `llm-pi-ai` 抛一个难懂的校验错误。
 - **结构化错误码**（`fetch-failed` / `settings-read-only` / `provider-plugin-missing` / `target-has-model-overrides` …），卡片直接展示。
-- **265 个离线用例**，外加一份对真实服务的验证脚本。
+- **269 个离线用例**，外加一份对真实服务的验证脚本。
 
 ---
 
@@ -372,7 +386,7 @@ Tiers are cumulative and each writes its own providers. Claude models are routed
 
 The account's own subscription is stated beside the configured tier, organization over personal, and a mismatch offers a one-click switch rather than changing anything by itself.
 
-The card lives in the sidebar **Plugins** panel — as an entry in the official group, on the bundle's own detail page, and behind the **Configure** control on the bundle's row — plus a tab under **Settings → Plugins**. It shows a card per tier with its model count, its price and its documented default quota, a merged target-provider card with one tab per channel, a live usage dashboard (5-hour and weekly windows, credits, request/cost/token totals) and the account key state. The provider row is created automatically a few seconds after the profile starts (set `autoSync: false` to make every write explicit); the API key is configured on that generated provider in **Settings → Models**, not in the card. Web search is optional and will not displace a provider the deployment named explicitly.
+The card lives in the sidebar **Plugins** panel — as an entry in the official group, on the bundle's own detail page, and behind the **Configure** control on the bundle's row — plus a tab under **Settings → Plugins**. One tier picker leads it, and the tier it selects is described directly underneath: its model count, its price and its documented default quota. Choosing a tier and pressing **Create / Update** commits that choice first and then writes the routes, so the button acts on the tier the picker is showing rather than the one that was saved before. Under that are a merged target-provider card with one tab per channel, a live usage dashboard (5-hour and weekly windows, credits, request/cost/token totals) and the account key state. The provider row is created automatically a few seconds after the profile starts (set `autoSync: false` to make every write explicit); the API key is configured on that generated provider in **Settings → Models**, not in the card. Web search is optional and will not displace a provider the deployment named explicitly.
 
 ```sh
 dsh plugin --profile web add link:<path to this repository>

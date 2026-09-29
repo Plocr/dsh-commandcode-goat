@@ -101,7 +101,7 @@ async function loadBundle() {
 }
 
 /** A browser context covering the three services the card injects. */
-function browserContext({ locale = 'zh', scopeValue: scopeOverride } = {}) {
+function browserContext({ locale = 'zh', scopeValue: scopeOverride, acceptWrites = false } = {}) {
   const dictionaries = {}
   const registrations = []
   const injectedSlots = []
@@ -141,8 +141,24 @@ function browserContext({ locale = 'zh', scopeValue: scopeOverride } = {}) {
           entryId,
           getSnapshot: () => scopeValue,
           subscribe: () => () => {},
-          set: async () => {},
-          unset: async () => {},
+          // `set`/`unset` resolve to whether the Host accepted the write; the
+          // default refuses, which is what the card must not mistake for success.
+          set: async (key, value) => {
+            if (!acceptWrites) return false
+            scopeValue.value = { ...scopeValue.value, [key]: value }
+            scopeValue.user = { ...scopeValue.user, [key]: value }
+            return true
+          },
+          unset: async (key) => {
+            if (!acceptWrites) return false
+            const value = { ...scopeValue.value }
+            const user = { ...scopeValue.user }
+            delete value[key]
+            delete user[key]
+            scopeValue.value = value
+            scopeValue.user = user
+            return true
+          },
         }
       },
     },
@@ -557,29 +573,59 @@ describe('rendering', () => {
     }
   })
 
-  it('restates the selected tier’s figures where its routes are listed', async () => {
-    // The options section compares all four tiers; the targets section repeats
-    // the one in use, beside the keys it produced, and no other — a second copy
-    // of the other three would be the duplication this card exists to remove.
+  it('draws the chosen tier once, beside the control that chose it', async () => {
+    // The page used to print a card per tier inside the options section and then
+    // the chosen one again under the targets disclosure: five blocks of
+    // near-identical prose, three of them describing tiers the reader had
+    // already decided against.
     useStateValues = statesFor([false, true, null])
     try {
       const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
       const tree = component({ ...face })
-      const targets = findByClass(tree, 'ccg-card').find((node) => findByClass(node, 'ccg-provider').length > 0)
-      assert.ok(targets !== undefined, 'the targets disclosure is open')
-      const inTargets = findByClass(targets, 'ccg-tier')
-      assert.equal(inTargets.length, 1)
-      const text = textOf(inTargets[0]).join(' ')
+      const tiers = tierNodes(tree)
+      assert.equal(tiers.length, 1, 'exactly one tier is described')
+      const text = textOf(tiers[0]).join(' ')
       assert.match(text, /GOAT/)
       assert.match(text, /Command \| goat/)
       // Its documentation link and its default quota come with it.
-      assert.deepEqual(findAll(inTargets[0], 'a').map((node) => node.props.href), ['https://commandcode.ai/docs/plans/goat'])
+      assert.deepEqual(findAll(tiers[0], 'a').map((node) => node.props.href), ['https://commandcode.ai/docs/plans/goat'])
       assert.match(text, /\$70/)
-      // The tier in use needs no switch button: it is already the one selected.
-      assert.deepEqual(findAll(inTargets[0], 'button'), [])
+      // It sits in the section whose picker selected it, not in the folded
+      // provider list.
+      const plan = findByClass(tree, 'ccg-card')[0]
+      assert.ok(findByClass(plan, 'ccg-planPicker').length === 1 || findByClass(plan, 'ccg-segments').length === 1)
+      assert.equal(findByClass(plan, 'ccg-tier').length, 1)
+      const targets = findByClass(tree, 'ccg-card').find((node) => findByClass(node, 'ccg-provider').length > 0)
+      assert.equal(findByClass(targets, 'ccg-tier').length, 0, 'the targets section no longer repeats it')
     } finally {
       useStateValues = []
     }
+  })
+
+  it('follows the picker: the figures shown are the tier staged, not the saved one', async () => {
+    // The card exists to answer "what does this tier give me", so it follows the
+    // staged choice — otherwise picking Pro changed nothing until a save.
+    const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    const staged = (tree) => textOf(tierNodes(tree)[0]).join(' ')
+
+    // The saved config is GOAT.
+    assert.match(staged(component({ ...face })), /月费 \$10 \/ 月/)
+
+    // Staging another tier shows that tier, without a save.
+    face.actions.edit('plan', 'go')
+    const go = staged(component({ ...face }))
+    assert.match(go, /^Go\b/)
+    assert.match(go, /月费 \$1 \/ 月/)
+    assert.doesNotMatch(go, /\$70/, 'the tier that was not chosen states nothing')
+
+    // Max is sold as two sizes, so choosing it states both rather than the one
+    // a reader may not be on.
+    face.actions.edit('plan', 'max')
+    const max = staged(component({ ...face }))
+    assert.match(max, /Max 10×/)
+    assert.match(max, /Max 20×/)
+    assert.match(max, /\$200 \/ 月/)
+    assert.match(max, /高级额度 \$200/)
   })
 
   it('shows one protocol at a time, on the tab the reader selected', async () => {
@@ -666,78 +712,74 @@ describe('rendering', () => {
 
     assert.match(text, /宿主半侧还是 v0\.6\.1 的进程/)
     assert.doesNotMatch(text, /要等第一次同步读过目录才知道/)
-    // The tiers it can name are still listed, with their provider names and
-    // their switch buttons; only the figures that need the newer host are gone.
+    // The tier the card is on is still named — it is the one the reader chose,
+    // and its provider name comes from the naming rule this module mirrors —
+    // while the figures that need the newer host are simply absent.
     const tiers = tierNodes(tree)
-    assert.deepEqual(tiers.map((tier) => textOf(tier)[0]), ['GOAT', 'Pro', 'Max'])
-    assert.deepEqual(tiers.map((tier) => textOf(tier)[1]), ['Command | goat', 'Command | pro', 'Command | max'])
+    assert.equal(tiers.length, 1, 'the chosen tier, and only it')
+    assert.equal(textOf(tiers[0])[0], 'GOAT')
+    assert.equal(textOf(tiers[0])[1], 'Command | goat')
   })
 
-  it('describes every tier with its quota, its models and its documentation', async () => {
+  it('describes the chosen tier with its quota, its models and its documentation', async () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
-    const tree = component({ ...face })
-    const text = textOf(tree).join(' ')
+    const text = textOf(component({ ...face })).join(' ')
 
-    const tiers = tierNodes(tree)
-    assert.equal(tiers.length, 4, 'one card per tier the host described')
-    for (const [index, tier] of tiers.entries()) {
-      const tierText = textOf(tier).join(' ')
-      assert.ok(tierText.includes(TIERS[index].title), `${TIERS[index].plan} is titled`)
-      assert.ok(tierText.includes(TIERS[index].provider), `${TIERS[index].plan} names its provider`)
-    }
-
-    // Max is sold as two sizes, so the card states both rather than describing
-    // a plan the reader may not be on.
-    assert.match(text, /Max 10×/)
-    assert.match(text, /Max 20×/)
-    assert.match(text, /\$100 \/ 月/)
-    assert.match(text, /\$200 \/ 月/)
-    // The figures behind the price, each under its own name.
+    // The figures behind the price of the tier that is in use, each under its
+    // own name, and none of the three the reader did not choose.
     assert.match(text, /月费 \$10 \/ 月/)
     assert.match(text, /5 小时窗口 \$14/)
     assert.match(text, /每周窗口 \$35/)
     assert.match(text, /月度余额 \$70/)
-    assert.match(text, /高级额度 \$100/)
-    // A tier nobody has synced yet says so instead of printing a zero.
-    assert.match(text, /这档有多少模型，要等第一次同步读过目录才知道。/)
     assert.match(text, /43 个模型，其中 43 个在线/)
+    assert.doesNotMatch(text, /\$100 \/ 月/, 'a tier nobody selected states nothing')
+    assert.doesNotMatch(text, /Max 20×/)
+    // A tier nobody has synced yet says so instead of printing a zero.
+    face.actions.edit('plan', 'max')
+    assert.match(textOf(component({ ...face })).join(' '), /这档有多少模型，要等第一次同步读过目录才知道。/)
+    assert.match(textOf(component({ ...face })).join(' '), /高级额度 \$100/)
 
-    // The citation is what makes the quota checkable.
-    assert.match(text, /档位说明/)
+    // The citation is what makes the quota checkable, and it belongs to the
+    // tier on screen rather than to all four.
+    const tree = component({ ...face })
+    assert.match(textOf(tree).join(' '), /档位说明/)
     const links = findAll(tree, 'a')
-    assert.deepEqual(links.map((node) => node.props.href), TIERS.map((tier) => tier.docURL))
+    assert.deepEqual(links.map((node) => node.props.href), ['https://commandcode.ai/docs/plans/max'])
     for (const link of links) {
       assert.equal(link.props.target, '_blank')
       assert.equal(link.props.rel, 'noreferrer')
     }
   })
 
-  it('marks the tier in use and the tier the account pays for', async () => {
+  it('marks the tier the account pays for, and says which one is in use', async () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
-    const [go, goat, pro] = tierNodes(component({ ...face }))
-    assert.match(textOf(goat).join(' '), /当前档位/)
-    assert.match(textOf(goat).join(' '), /账户订阅（组织）/)
-    for (const tier of [go, pro]) {
-      assert.doesNotMatch(textOf(tier).join(' '), /当前档位/)
-      assert.doesNotMatch(textOf(tier).join(' '), /账户订阅/)
-    }
+    // GOAT is both the saved tier and the subscribed one.
+    assert.match(textOf(tierNodes(component({ ...face }))[0]).join(' '), /当前档位/)
+    assert.match(textOf(tierNodes(component({ ...face }))[0]).join(' '), /账户订阅（组织）/)
+
+    // Stage a tier the account does not pay for: the card follows the draft, so
+    // the "current tier" tag disappears with it — that tag states what the host
+    // has actually written, and nothing has been written yet.
+    face.actions.edit('plan', 'pro')
+    const pro = textOf(tierNodes(component({ ...face }))[0]).join(' ')
+    assert.match(pro, /^Pro/)
+    assert.doesNotMatch(pro, /当前档位/)
+    assert.doesNotMatch(pro, /账户订阅/)
   })
 
-  it('offers a switch per tier, and never switches from the card body', async () => {
+  it('switches tier only from the picker, never from the card body', async () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
-    const [go, goat, pro, max] = tierNodes(component({ ...face }))
+    const [tier] = tierNodes(component({ ...face }))
 
-    // The body is not a control: the pills above remain the only way to stage a
-    // tier, so clicking the figures cannot change the configuration they state.
-    for (const tier of [go, goat, pro, max]) assert.equal(tier.props.onClick, undefined)
+    // The body is not a control: the figures it prints cannot be the trigger
+    // that changes the configuration they describe, and with one tier on screen
+    // there is nothing to switch to from here anyway.
+    assert.equal(tier.props.onClick, undefined)
+    assert.deepEqual(findAll(tier, 'button'), [])
 
-    const buttonIn = (tier) => findAll(tier, 'button')[0]
-    assert.equal(buttonIn(goat), undefined, 'the configured tier needs no switch to itself')
-    for (const tier of [go, pro, max]) {
-      assert.equal(textOf(buttonIn(tier)).join(''), '切换到此档位')
-    }
-
-    buttonIn(pro).props.onClick()
+    const segments = findByClass(component({ ...face }), 'ccg-segment')
+    assert.deepEqual(segments.map((node) => textOf(node).join('')), ['Go', 'GOAT', 'Pro', 'Max'])
+    segments[2].props.onClick()
     assert.equal(face.store.getSnapshot().fields.plan, 'pro')
     assert.equal(face.store.getSnapshot().dirty, true)
   })
@@ -1252,6 +1294,79 @@ describe('rendering', () => {
       // Nothing moved: the read-back still describes the section as it stands.
       assert.equal(state.fields.plan, 'goat')
       assert.equal(scopeValue.value.plan, 'goat')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  /**
+   * Create / Update has to act on the tier the reader just chose.
+   *
+   * The button sits beside the picker, but `/sync` writes the *host's* config and
+   * the picker only stages a draft — so without a save first, choosing Pro and
+   * pressing the button wrote GOAT while the card showed Pro's figures.
+   */
+  it('commits a staged tier before creating the routes for it', async () => {
+    const { entry, react } = await loadBundle()
+    const exports = entry.factory(requireFor(react, primitivesShim(react)))
+    const { ctx, registrations, scopeValue } = browserContext({
+      acceptWrites: true,
+      scopeValue: { value: { plan: 'goat', autoSync: false }, user: {}, base: {}, revision: 1 },
+    })
+    const calls = []
+    let planWhenSynced
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      const path = String(url).replace('/api/dsh-commandcode-goat', '')
+      calls.push(path)
+      if (path === '/sync') planWhenSynced = scopeValue.value.plan
+      const value = path === '/describe' ? DESCRIBE : path === '/usage' ? USAGE : { plan: 'pro' }
+      return { ok: true, status: 200, json: async () => ({ ok: true, value }) }
+    }
+    try {
+      exports.apply(ctx)
+      await settle()
+      const tab = registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      tab.face.actions.edit('plan', 'pro')
+      calls.length = 0
+
+      await tab.face.actions.sync()
+
+      assert.equal(scopeValue.value.plan, 'pro', 'the choice is committed')
+      assert.ok(calls.includes('/sync'), 'and the routes are written')
+      assert.equal(planWhenSynced, 'pro', 'the sync runs against the tier that was chosen, not the previous one')
+      assert.equal(tab.face.store.getSnapshot().dirty, false)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('refuses to create routes for a tier it could not commit', async () => {
+    const { entry, react } = await loadBundle()
+    const exports = entry.factory(requireFor(react, primitivesShim(react)))
+    const { ctx, registrations } = browserContext({
+      acceptWrites: false,
+      scopeValue: { value: { plan: 'goat', autoSync: false }, user: {}, base: {}, revision: 1 },
+    })
+    const calls = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      const path = String(url).replace('/api/dsh-commandcode-goat', '')
+      calls.push(path)
+      const value = path === '/describe' ? DESCRIBE : USAGE
+      return { ok: true, status: 200, json: async () => ({ ok: true, value }) }
+    }
+    try {
+      exports.apply(ctx)
+      await settle()
+      const tab = registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
+      tab.face.actions.edit('plan', 'pro')
+      calls.length = 0
+
+      await tab.face.actions.sync()
+
+      assert.equal(calls.includes('/sync'), false, 'nothing is written for a config the reader did not manage to set')
+      assert.match(String(tab.face.store.getSnapshot().error), /plan/)
     } finally {
       globalThis.fetch = originalFetch
     }
