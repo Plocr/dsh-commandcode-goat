@@ -633,6 +633,38 @@ describe('rendering', () => {
     }
   })
 
+  it('tells a reader to restart when the host cannot describe tiers at all', async () => {
+    // The card is re-read from disk on every page load; the host half only when
+    // the process starts. So after an update the card can be newer than the host
+    // serving it, and a host from before this feature answers with `plans` and
+    // no `tiers` at all. "Wait for the first sync" would then be a promise no
+    // sync can keep, and the reader goes looking for a problem that is a restart.
+    // Verbatim what a 0.6.1 host answers, read off the running process: no
+    // `tiers`, three plans, and targets without a channel or a protocol.
+    const old = {
+      ...DESCRIBE,
+      version: '0.6.1',
+      tiers: undefined,
+      plans: ['goat', 'pro', 'max'],
+      targets: {
+        openai: { key: 'commandcode-goat-autosync', created: true, models: 74 },
+        anthropic: { key: 'commandcode-goat-anthropic', created: true, models: 10 },
+        responses: { key: 'commandcode-goat-responses', created: false, models: 0 },
+      },
+    }
+    const { component, face } = settingsTab(await mount({ '/describe': old, '/usage': USAGE }))
+    const tree = component({ ...face })
+    const text = textOf(tree).join(' ')
+
+    assert.match(text, /宿主半侧还是 v0\.6\.1 的进程/)
+    assert.doesNotMatch(text, /要等第一次同步读过目录才知道/)
+    // The tiers it can name are still listed, with their provider names and
+    // their switch buttons; only the figures that need the newer host are gone.
+    const tiers = tierNodes(tree)
+    assert.deepEqual(tiers.map((tier) => textOf(tier)[0]), ['GOAT', 'Pro', 'Max'])
+    assert.deepEqual(tiers.map((tier) => textOf(tier)[1]), ['Command | goat', 'Command | pro', 'Command | max'])
+  })
+
   it('describes every tier with its quota, its models and its documentation', async () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
     const tree = component({ ...face })

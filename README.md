@@ -238,6 +238,9 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 **更新了插件，但界面是新的、行为还是旧的（或卡片标题旁写着 `v?`）？**
 插件有**两半**：浏览器半侧（`lib/client.js`）每次打开页面都从磁盘重新读取，宿主半侧（`lib/index.js` 等）只在启动时被 Node `import` 一次。所以 `pnpm update` 之后只刷新页面，会出现「新卡片 + 旧宿主」的混合状态——看起来就像修复没生效。卡片头部会显示宿主的版本号，宿主太旧没上报版本时直接显示 `v?` 并给出提示。这种情况**必须完全退出 DSH Desktop（含托盘）再启动**。
 
+**各档位的卡片是空的，只写着「要等第一次同步读过目录才知道」？**
+先看卡片最上面有没有一条「宿主半侧还是 v0.6.x 的进程」的提示。有的话就是上面那种混合状态：旧宿主根本不上报各档位的模型数和额度，等多久都不会出现——重启即可。没有那条提示，说明宿主是新的、只是还没读到能力目录（15 秒后的首次同步会读；卡片在打开时也会自己去读一次，所以通常一两秒内就有数字）。
+
 **想改生成供应商的密钥或地址？**
 在 **设置 → 模型** 里直接改。下次同步只刷新 `models`，不会动你写过的 `apiKeyEnv`、`baseURL`、`compat`、`displayName`——唯一的例外是**本插件自己写过的**显示名：0.6.x 的 `Command Code GOAT` 会在下次同步时更新成 `Command | goat`，否则升级后那两条同名的路由会一直留着。反过来，如果某个路由上已经写了 `modelOverrides`，同步会拒绝并说明原因——那两者不能共存，插件不会悄悄覆盖你的配置。
 
@@ -250,7 +253,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 ```sh
 npm install           # 只需要 @deepseek-ai/schemastery（其实就是 dsh 自带的那份）
-npm test              # 242 个用例，全部离线，不需要网络
+npm test              # 248 个用例，全部离线，不需要网络
 npm run verify:live   # 对真实服务跑一遍：模型列表、目录解析、档位统计、端点探活
 ```
 
@@ -324,7 +327,7 @@ tests/
 - **不抢占显式指定的搜索供应商**。
 - **写入前检查 `modelOverrides` 冲突**，而不是让 `llm-pi-ai` 抛一个难懂的校验错误。
 - **结构化错误码**（`fetch-failed` / `settings-read-only` / `provider-plugin-missing` / `target-has-model-overrides` …），卡片直接展示。
-- **242 个离线用例**，外加一份对真实服务的验证脚本。
+- **248 个离线用例**，外加一份对真实服务的验证脚本。
 
 ---
 
@@ -342,7 +345,7 @@ The card lives in the sidebar **Plugins** panel — as an entry in the official 
 
 ```sh
 dsh plugin --profile web add link:<path to this repository>
-npm test            # 242 offline cases
+npm test            # 248 offline cases
 npm run verify:live # probe the real upstreams and account endpoints
 ```
 

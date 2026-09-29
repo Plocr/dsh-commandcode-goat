@@ -243,7 +243,9 @@ describe('apply', () => {
     apply(ctx, Config({}))
     const route = webServer.state.routes.find((entry) => entry.path.endsWith('/describe'))
     const res = bridgeResponse()
-    await route.handler(bridgeRequest(), res)
+    // Offline: a status read reaches for the catalog when it has none, and this
+    // suite is required to pass with no network at all.
+    await withFetch(async () => { throw new TypeError('offline') }, () => route.handler(bridgeRequest(), res))
     assert.equal(JSON.parse(res.body).value.entryId, 'commandcode-goat')
   })
 
@@ -259,7 +261,7 @@ describe('apply', () => {
     apply(ctx, Config({}))
     const route = webServer.state.routes.find((entry) => entry.path.endsWith('/describe'))
     const res = bridgeResponse()
-    await route.handler(bridgeRequest(), res)
+    await withFetch(async () => { throw new TypeError('offline') }, () => route.handler(bridgeRequest(), res))
     assert.equal(JSON.parse(res.body).value.entryId, SETTINGS_NS)
     assert.equal(SETTINGS_NS, 'commandcode-goat')
   })
@@ -665,12 +667,13 @@ describe('the sync the bridge drives', () => {
     apply(ctx, Config({ plan: 'goat' }))
     const describeRoute = webServer.state.routes.find((entry) => entry.path === `${BRIDGE_PREFIX}/describe`)
 
-    const payload = await drive(describeRoute)
+    // Offline, because a status read now reaches for the catalog itself: with
+    // no source answering, the counts are absent rather than zero, which is the
+    // state the tier cards have to render without inventing a number.
+    const payload = await withFetch(async () => { throw new TypeError('offline') }, () => drive(describeRoute))
     const value = payload.value
     assert.deepEqual(value.plans, ['go', 'goat', 'pro', 'max'])
     assert.deepEqual(value.tiers.map((tier) => tier.plan), ['go', 'goat', 'pro', 'max'])
-    // Before the first sync the catalog has not been read, so the counts are
-    // absent rather than zero.
     assert.deepEqual(value.tiers.map((tier) => tier.models), [null, null, null, null])
     const goat = value.tiers.find((tier) => tier.plan === 'goat')
     assert.deepEqual(goat.routes, ['openai'])
@@ -706,6 +709,33 @@ describe('the sync the bridge drives', () => {
     // list serves both.
     assert.deepEqual(tiers.map((tier) => tier.models), [1, 1, 2, 2])
     assert.deepEqual(tiers.map((tier) => tier.live), [1, 1, 2, 2])
+  })
+
+  it('reads the catalog for a status call that arrives before any sync', async () => {
+    // The first sync is deliberately fifteen seconds after mount, and a reader
+    // who opens the card inside that window used to see four tiers with no
+    // figures beside them at all. The status read now pays for the one page
+    // those figures need.
+    const { route } = mount({ plan: 'goat' })
+    const urls = []
+    const payload = await withFetch(async (url) => {
+      urls.push(String(url))
+      if (String(url).includes('/provider/v1/models')) return { ok: true, status: 200, json: async () => API_BODY }
+      return { ok: true, status: 200, text: async () => goatPage(CATALOG_ENTRIES) }
+    }, () => drive(route('/describe')))
+
+    assert.deepEqual(urls.filter((url) => url.includes('/docs/plans/')), ['https://commandcode.ai/docs/plans/goat'])
+    assert.deepEqual(payload.value.tiers.map((tier) => tier.models), [1, 1, 2, 2])
+    // Only the catalog was read, so the live count stays honestly unknown
+    // rather than being reported as zero.
+    assert.deepEqual(payload.value.tiers.map((tier) => tier.live), [null, null, null, null])
+  })
+
+  it('still answers a status call when the catalog cannot be read at all', async () => {
+    const { route } = mount({ plan: 'goat' })
+    const payload = await withFetch(async () => ({ ok: false, status: 503, statusText: 'Unavailable' }), () => drive(route('/describe')))
+    assert.equal(payload.ok, true)
+    assert.deepEqual(payload.value.tiers.map((tier) => tier.models), [null, null, null, null])
   })
 })
 
