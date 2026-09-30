@@ -23,15 +23,23 @@
 #     # autoSync: false      # on by default: the routes are created on first load
 #     # pruneOtherPlans: false  # on by default: a switch removes the other tier's routes
 #     # webSearch: true
+#     # recoverUpstreamOverflow: false  # on by default: reduce + retry once the gateway refuses
 #     # maxContextWindow: 0  # 0 keeps the vendor's own window on every model
 #
-# `maxContextWindow` is the one deployment fact that exists because a gateway can
-# serve less than the model's own ceiling. The directory states a window per
-# model, and the harness compacts a conversation at a fraction of whatever this
-# route publishes — so a vendor number the gateway cannot honour does not buy a
-# longer conversation, it buys a rejected request once the conversation passes
-# what the route really accepts. Set it below that point and the same long
-# session is summarised instead of failing.
+# `recoverUpstreamOverflow` is what handles a gateway that refuses a request it
+# cannot expand — the "path expansion / 512 candidates" 400 the harness reads as
+# an ordinary invalid request, and therefore neither retries nor compacts for.
+# With it on, this plugin prunes oversized tool results and asks for the request
+# to be retried, and compacts one region on a second refusal, so the routes can
+# keep publishing the window the vendor declares. Turn it off to let the
+# upstream error stand as it is.
+#
+# `maxContextWindow` is the escape hatch, and it is not a fix: a vendor number
+# the gateway cannot honour does not buy a longer conversation, it buys a
+# rejected request once the conversation passes what the route really accepts.
+# Lowering it makes the harness summarise earlier and permanently — the
+# subscription's own window stops being usable at all — so it is only for a
+# deployment whose gateway refuses even reduced requests.
 
 - insert:
     - id: commandcode-goat

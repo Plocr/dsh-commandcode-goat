@@ -208,7 +208,8 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 | `usageBaseURL` | `https://api.commandcode.ai` | `/alpha/*` 用量与搜索的 API 根 |
 | `enableUsageTool` | `true` | 注册 `commandcode_usage` 工具 |
 | `enableBridge` | `true` | 提供设置卡片调用的 loopback 端点 |
-| `maxContextWindow` | `0` | 写进每个模型的上下文窗口上限（token）。`0` = 用厂商声明的数字。厂商声明的是**模型**的上限，而**网关**未必承受得住：DSH 按这个数字的一个比例触发自动压缩，声明得比实际能服务的高，换来的不是更长的会话，而是会话一超过真实上限就被上游拒绝 |
+| `recoverUpstreamOverflow` | `true` | 上游用 `a single path expansion cannot exceed 512 candidates` 拒绝请求时，剪枝超长的工具结果并重试；第二次被拒时再压缩一个区段。窗口保持厂商声明的数字 |
+| `maxContextWindow` | `0` | **逃生阀，不是修复**：写进每个模型的窗口上限（token）。`0` = 用厂商声明的数字 —— 路由应该发布的就是这个。压低它换来的是「更早、而且是永久地摘要」，等于把订阅卖 1M 的能力砍掉，只有在网关连缩小后的请求也拒绝时才值得动 |
 
 ---
 
@@ -254,7 +255,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 ```sh
 npm install           # 只需要 @deepseek-ai/schemastery（其实就是 dsh 自带的那份）
-npm test              # 272 个用例，全部离线，不需要网络
+npm test              # 296 个用例，全部离线，不需要网络
 npm run verify:live   # 对真实服务跑一遍：模型列表、目录解析、档位统计、端点探活
 ```
 
@@ -412,7 +413,7 @@ threshold = min(contextWindow × 0.8, contextWindow − reserved − headroom[�
 
 目录里 `deepseek/deepseek-v4.1-flash` 声明 `contextWindow: 1000000`，插件**照抄**是忠实的——于是阈值落在 **800,000**，而路由在 479K 就死了，压缩永远等不到触发，请求直接撞死。
 
-改法：新增 `maxContextWindow`，把写进模型条目的窗口压到路由实际能服务的范围之内。
+改法（0.7.4 当时）：新增 `maxContextWindow`，把写进模型条目的窗口压到路由实际能服务的范围之内。
 
 ```yaml
 - id: commandcode-goat
@@ -423,7 +424,39 @@ threshold = min(contextWindow × 0.8, contextWindow − reserved − headroom[�
 
 `160000` 的算法：最坏情况下（没有输出预留）阈值 = 160000 − 65536 = **94,464**，低于唯一被验证可用的 112,390。默认 `0` 表示完全用厂商的数字，所以别人的部署行为不变。
 
-**这仍然是绕开，不是修好**：声明 1M 而网关服务不了 1M，是上游的问题，`trace_id` 在错误里，值得报给他们。
+**0.7.5 已经否定这条改法**：压窗口不是修复，它本身就是问题 —— 一个声明 1M 的模型被锁到 ~62K 就强制摘要，而 21:55 那次实测证明即使窗口已经压到 160000，请求照样 400。现在默认 `0`，真正的恢复逻辑见 0.7.5 一节。
+
+**声明 1M 而网关服务不了 1M，是上游的问题**，`trace_id` 在错误里，值得报给他们。
+
+### 0.7.5：让上游的拒绝变成一次「压缩 + 重试」，而不是一次失败
+
+0.7.4 的方向是错的：**压窗口不是修复，它本身就是问题**。一个声明 1M 的模型被压到 160000，实际阈值是
+
+```
+threshold = min(window × 0.8, window − 保留输出 maxTokens − headroom 65536)
+          = min(128000, 160000 − 32768 − 65536) = 61,696
+```
+
+（上面那节写的 94,464 漏算了 32,768 的输出预留，真实值只有它的 2/3。）它也并没有阻止失败：实测里窗口已经压到 160000 的那一回合，请求照样 400 —— 因为**发请求之前根本没有触发压缩**。
+
+真正缺的是分类：那句 400 不在 `@deepseek-ai/dsh-llm` 认得的任何「上下文超限」措辞里，于是 pi-ai 适配器判成 `INVALID_REQUEST` ——
+
+- 它不在重试白名单（`EMPTY_RESPONSE` / `RATE_LIMIT` / `SERVER` / `TIMEOUT` / `TRANSPORT`）里 → 不重试；
+- 它不是 `CONTEXT_WINDOW_EXCEEDED` → `dsh-compaction-basic` 挂在 `agent/request-error` 上的自动恢复（剪枝 → 压缩一个区段 → `{ kind: "retry" }`）永远不会为它触发。
+
+于是自锁：这一轮在第一发请求上就死了，什么都学不到，下一轮原样再来一次。
+
+本版在**插件内部**补上这次分类（`lib/recovery.js`），只对**本插件生成的路由**、且文案确实是网关那句的失败生效：
+
+1. 第一次被拒：用 harness 自己的 `toolResultPruner` 剪掉超长的工具结果（纯本地，不花上游调用），再 `{ kind: "retry" }` 让 harness 重发请求；没装剪枝器时直接进入第 2 步；
+2. 第二次被拒：经 `ctx.compaction` 压缩一个区段后重试 —— 优先 `compactIfNeeded(agent, "context-overflow")`（也就是 harness 本该走的那条路），没有它时退回手工的 `compactNow`；
+3. 仍被拒：不再重试，把原始错误原样抛出，并在日志里写明。
+
+每个会话各有自己的预算（默认 2 次），产出一条助手消息后重置。**窗口保持厂商声明的 1M**：只有网关真的拒绝之后才会缩小会话，而不是预先锁死。这与 Command Code 自己 CLI 的做法一致（文档 `"Prompt too long" never fails the turn`：当场压缩并重试一次）。
+
+开关 `recoverUpstreamOverflow`（默认开）；关掉即退回 0.7.4 之前的行为：上游拒绝就是这一轮结束。
+
+**仍然没解决的部分**：这条路由能承受的真实规模未知（只夹到 112K 冷请求成功、479K 冷请求失败），`512 candidates` 究竟是长度还是网关内部的路径展开上限也没有结论 —— 只有 Command Code 能回答。
 
 这两个改动的取舍是刻意的：**默认自动写一次，比让人先找到按钮更符合「装一个插件」的预期**；而写入本身仍然是幂等的、可见的、可在 **设置 → 模型** 里直接改的。要恢复成「只在点按钮时写」，把 `autoSync` 设成 `false` 即可。
 
@@ -437,7 +470,7 @@ threshold = min(contextWindow × 0.8, contextWindow − reserved − headroom[�
 - **不抢占显式指定的搜索供应商**。
 - **写入前检查 `modelOverrides` 冲突**，而不是让 `llm-pi-ai` 抛一个难懂的校验错误。
 - **结构化错误码**（`fetch-failed` / `settings-read-only` / `provider-plugin-missing` / `target-has-model-overrides` …），卡片直接展示。
-- **272 个离线用例**，外加一份对真实服务的验证脚本。
+- **296 个离线用例**，外加一份对真实服务的验证脚本。
 
 ---
 
@@ -455,8 +488,9 @@ The card lives in the sidebar **Plugins** panel — as an entry in the official 
 
 ```sh
 dsh plugin --profile web add link:<path to this repository>
-npm test            # 248 offline cases
+npm test            # 296 offline cases
 npm run verify:live # probe the real upstreams and account endpoints
 ```
 
 MIT. Architecture inspired by [CJYLZS/dsh-commandcode-provider](https://github.com/CJYLZS/dsh-commandcode-provider) (MIT); see the section above for what differs.
+

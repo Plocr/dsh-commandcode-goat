@@ -50,8 +50,23 @@ function mockContext(services = {}) {
     emit(event) {
       for (const handler of listeners.get(event) ?? []) handler()
     },
+    /**
+     * Replay one middleware event (`agent/request-error` and friends): a handler
+     * that returns a value ends the chain, `next()` continues it. That is the
+     * contract the harness uses to decide whether to retry a failed request.
+     */
+    waterfall(event, payload) {
+      const chain = listeners.get(event) ?? []
+      let index = -1
+      const next = async () => {
+        index += 1
+        if (index >= chain.length) return undefined
+        return await chain[index](payload, next)
+      }
+      return next()
+    },
   }
-  return { ctx, effects }
+  return { ctx, effects, listeners }
 }
 
 /**
@@ -894,5 +909,59 @@ describe('the usage tool', () => {
     } finally {
       if (originalKey !== undefined) process.env.CC_GOAT_TEST_MISSING = originalKey
     }
+  })
+})
+
+/**
+ * The mounted plugin has to recover the gateway refusal on the routes *it*
+ * generated — under the tier the config currently selects, and no other — so
+ * that the published context window can stay the vendor's.
+ */
+describe('upstream-overflow recovery, as mounted', () => {
+  /** The 400 Command Code returns for a request its gateway cannot expand. */
+  const GATEWAY_REFUSAL = {
+    code: 'INVALID_REQUEST',
+    message: '400: {"message":"{\\"message\\":\\"a single path expansion cannot exceed 512 candidates trace_id: 49d472f289d9707a8e4bc4814eca2360\\",\\"type\\":\\"invalid_request_error\\"}\\n","type":"invalid_request_error"}',
+  }
+
+  /** Mount the plugin and hand back the middleware the agent loop would run. */
+  function mount(config = {}) {
+    const session = { surface: { replaceGeneration: 0 } }
+    const pruner = {
+      calls: 0,
+      pruneSession(target) {
+        this.calls += 1
+        target.surface.replaceGeneration += 1
+        return { pruned: 3, charsRemoved: 9000 }
+      },
+    }
+    const { ctx, listeners } = mockContext({ toolResultPruner: pruner })
+    apply(ctx, Config(config))
+    assert.ok(listeners.has('agent/request-error'), 'the recovery hook was not registered')
+    const refuse = (provider = 'commandcode-goat-autosync') => ctx.waterfall('agent/request-error', {
+      agent: { session },
+      provider,
+      failure: GATEWAY_REFUSAL,
+    })
+    return { ctx, pruner, session, refuse }
+  }
+
+  it('prunes and retries on the generated route of the configured tier', async () => {
+    const { pruner, session, refuse } = mount({ plan: 'goat' })
+    assert.deepEqual(await refuse('commandcode-goat-autosync'), { kind: 'retry' })
+    assert.equal(pruner.calls, 1)
+    assert.equal(session.surface.replaceGeneration, 1)
+  })
+
+  it('follows the tier the config selects, not the tier it started on', async () => {
+    const { refuse } = mount({ plan: 'max' })
+    assert.equal(await refuse('commandcode-goat-autosync'), undefined)
+    assert.deepEqual(await refuse('commandcode-max-autosync'), { kind: 'retry' })
+  })
+
+  it('leaves the request alone when the switch is off', async () => {
+    const { pruner, refuse } = mount({ recoverUpstreamOverflow: false })
+    assert.equal(await refuse(), undefined)
+    assert.equal(pruner.calls, 0)
   })
 })
