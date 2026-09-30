@@ -230,6 +230,26 @@ describe('buildEntries', () => {
     }
   })
 
+  it('caps the published window when the deployment says the route serves less', () => {
+    // A gateway can refuse well below the model's own ceiling, and DSH compacts
+    // at a fraction of whatever this number says — so over-claiming it does not
+    // buy a longer conversation, it buys a rejected request instead of a summary.
+    const windowed = [{ id: 'vendor/model-one', name: 'Model One', contextWindow: 1_000_000, supportedEndpoints: ['/chat/completions'] }]
+    const plain = buildEntries({ apiList: windowed, catalog, plan: 'goat' })
+    assert.equal(plain.routes.openai[0].contextWindow, 1_000_000, 'the vendor number passes through untouched by default')
+
+    const capped = buildEntries({ apiList: windowed, catalog, plan: 'goat', maxContextWindow: 128_000 })
+    assert.equal(capped.routes.openai[0].contextWindow, 128_000)
+
+    // A cap above what the vendor states changes nothing, and 0 means "no cap".
+    assert.equal(buildEntries({ apiList: windowed, catalog, plan: 'goat', maxContextWindow: 4_000_000 }).routes.openai[0].contextWindow, 1_000_000)
+    assert.equal(buildEntries({ apiList: windowed, catalog, plan: 'goat', maxContextWindow: 0 }).routes.openai[0].contextWindow, 1_000_000)
+
+    // A model the vendor gives a smaller window keeps it.
+    const small = [{ id: 'vendor/model-one', name: 'Model One', contextWindow: 32_000, supportedEndpoints: ['/chat/completions'] }]
+    assert.equal(buildEntries({ apiList: small, catalog, plan: 'goat', maxContextWindow: 128_000 }).routes.openai[0].contextWindow, 32_000)
+  })
+
   it('reads the deal the way it reads every other capability: absent means unstated', () => {
     assert.equal(dealLabel(CATALOG_ENTRY({ deal: { label: 'Free', free: true } })), 'Free')
     // A free flag with no label still gets the vendor's own word for it.

@@ -224,6 +224,16 @@ describe('normalizeConfig', () => {
     assert.deepEqual(normalizeConfig({ extraIds: ['a', '  ', 7] }).extraIds, ['a'])
   })
 
+  it('carries a context-window cap through, and treats anything unusable as "no cap"', () => {
+    // 0 is the default and means "publish the vendor's number", so a bad value
+    // must not turn into a cap of some small number — that would compact every
+    // conversation down to nothing.
+    assert.equal(normalizeConfig({}).maxContextWindow, 0)
+    assert.equal(normalizeConfig({ maxContextWindow: 128_000 }).maxContextWindow, 128_000)
+    assert.equal(normalizeConfig({ maxContextWindow: -1 }).maxContextWindow, 0)
+    assert.equal(normalizeConfig({ maxContextWindow: 'lots' }).maxContextWindow, 0)
+  })
+
   it('reads auto-sync as on unless it was explicitly turned off', () => {
     // The whole point of the default is that a fresh install produces the
     // provider row in Settings → Models without anyone finding a button, so

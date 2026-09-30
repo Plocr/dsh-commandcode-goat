@@ -208,6 +208,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 | `usageBaseURL` | `https://api.commandcode.ai` | `/alpha/*` 用量与搜索的 API 根 |
 | `enableUsageTool` | `true` | 注册 `commandcode_usage` 工具 |
 | `enableBridge` | `true` | 提供设置卡片调用的 loopback 端点 |
+| `maxContextWindow` | `0` | 写进每个模型的上下文窗口上限（token）。`0` = 用厂商声明的数字。厂商声明的是**模型**的上限，而**网关**未必承受得住：DSH 按这个数字的一个比例触发自动压缩，声明得比实际能服务的高，换来的不是更长的会话，而是会话一超过真实上限就被上游拒绝 |
 
 ---
 
@@ -384,6 +385,45 @@ tests/
 副作用（已知）：选中的模型名会带着标记出现在输入框旁边。想改字面量只在一处：`catalog.js` 里 append 的那一行。
 
 **已知的、刻意保留的取舍**：`successRate` 的百分比/分数二义性（服务实测发百分比，但 0.95 这种值也按分数读，测试固定了两种读法）；能力目录读不到时的降级策略仍是「全部按当前档位处理」。这两处都要么需要上游给单位，要么会把一次文档页抖动放大成整天不更新。
+
+### 0.7.4：长会话被上游 400 —— 声明了一个网关承受不住的窗口
+
+现象：一个跑了很久的会话在某条路由上稳定失败，报的是上游的 400：
+
+```
+400: {"message":"{\"message\":\"a single path expansion cannot exceed 512 candidates trace_id: …\"…}
+```
+
+排查过程（全部有据）：
+
+| 观察 | 结论 |
+|---|---|
+| 同一条路由 + 同一个模型，新开一个小请求立刻成功 | 路由、密钥、模型 id 都是好的 |
+| 会话日志里 7 次请求的**工具数组逐字节相同**（同一个 sha256、42 个、37336 字节） | 工具 schema **不是**原因（我一开始怀疑过 `oneOf`/无 `type` 的 schema，错了） |
+| 带 `reasoningEffort: max` 的请求成功过，不带也失败过 | 思考档位不是原因 |
+| 这条路由上 112,390 input tokens 成功，~479K 失败 | 与**请求长度**相关 |
+| 同一段 ~479K 的上下文走 `deepseek-account` 成功（479,257 tokens） | 是**这条路由的网关**承受不住，不是模型、也不是请求格式 |
+
+机制：DSH 的自动压缩阈值是
+
+```
+threshold = min(contextWindow × 0.8, contextWindow − reserved − headroom[默认 65536])
+```
+
+目录里 `deepseek/deepseek-v4.1-flash` 声明 `contextWindow: 1000000`，插件**照抄**是忠实的——于是阈值落在 **800,000**，而路由在 479K 就死了，压缩永远等不到触发，请求直接撞死。
+
+改法：新增 `maxContextWindow`，把写进模型条目的窗口压到路由实际能服务的范围之内。
+
+```yaml
+- id: commandcode-goat
+  name: dsh-commandcode-goat
+  config:
+    maxContextWindow: 160000
+```
+
+`160000` 的算法：最坏情况下（没有输出预留）阈值 = 160000 − 65536 = **94,464**，低于唯一被验证可用的 112,390。默认 `0` 表示完全用厂商的数字，所以别人的部署行为不变。
+
+**这仍然是绕开，不是修好**：声明 1M 而网关服务不了 1M，是上游的问题，`trace_id` 在错误里，值得报给他们。
 
 这两个改动的取舍是刻意的：**默认自动写一次，比让人先找到按钮更符合「装一个插件」的预期**；而写入本身仍然是幂等的、可见的、可在 **设置 → 模型** 里直接改的。要恢复成「只在点按钮时写」，把 `autoSync` 设成 `false` 即可。
 

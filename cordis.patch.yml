@@ -23,6 +23,15 @@
 #     # autoSync: false      # on by default: the routes are created on first load
 #     # pruneOtherPlans: false  # on by default: a switch removes the other tier's routes
 #     # webSearch: true
+#     # maxContextWindow: 0  # 0 keeps the vendor's own window on every model
+#
+# `maxContextWindow` is the one deployment fact that exists because a gateway can
+# serve less than the model's own ceiling. The directory states a window per
+# model, and the harness compacts a conversation at a fraction of whatever this
+# route publishes — so a vendor number the gateway cannot honour does not buy a
+# longer conversation, it buys a rejected request once the conversation passes
+# what the route really accepts. Set it below that point and the same long
+# session is summarised instead of failing.
 
 - insert:
     - id: commandcode-goat
