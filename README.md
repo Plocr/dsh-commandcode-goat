@@ -1,5 +1,13 @@
 # dsh-commandcode-goat
 
+[![dsh.so 风险：低](https://www.dsh.so/badge/dsh-commandcode-goat.svg)](https://www.dsh.so/artifact/dsh-commandcode-goat/)
+[![dsh.so 安装验证：dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-commandcode-goat@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-commandcode-goat/)
+[![DeepSeek Harness 插件](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![Release](https://img.shields.io/github/v/release/Plocr/dsh-commandcode-goat)](https://github.com/Plocr/dsh-commandcode-goat/releases)
+[![License: MIT](https://img.shields.io/github/license/Plocr/dsh-commandcode-goat)](https://github.com/Plocr/dsh-commandcode-goat/blob/main/LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/Plocr/dsh-commandcode-goat)](https://github.com/Plocr/dsh-commandcode-goat/commits/main)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://github.com/Plocr/dsh-commandcode-goat/blob/main/package.json)
+
 DSH 插件：把 **Command Code 订阅（Go / GOAT / Pro / Max）** 接成 DeepSeek Harness 的模型供应商，并附带账户用量与联网搜索——全部走同一把账户密钥。
 
 ```sh
@@ -9,6 +17,32 @@ dsh plugin --profile web add link:<本仓库根目录>
 安装后重启该 profile。**等十几秒**，`commandcode-goat-autosync` 会自己出现在 **设置 → 模型** 里（名字显示为 `Command | goat`）——进去填上 API 密钥就能用，不需要先找到本插件的卡片。
 
 要改档位、开搜索、看用量时再打开卡片（位置见下文《卡片在哪里》）。
+
+---
+
+## 界面
+
+下面五张都是本机运行中的 0.7.5 实拍。账户名与用量数字已打码，截图不含侧边栏。
+
+**档位与通道** —— 选档位，按「创建 / 更新」；每个档位写自己的一组供应商，切档不会盖掉旧的：
+
+![档位与通道](assets/subscription-tiers.png)
+
+**同步出的供应商** —— GOAT 档在 **设置 → 模型** 里的两行：`Command | goat` 与 `Command | goat · Claude`（一个档位要两种协议，所以是两条路由）：
+
+![同步出的供应商](assets/generated-providers.png)
+
+**账户用量** —— 5 小时窗口、每周窗口、月度余额，以及本期请求 / 成本 / Token：
+
+![账户用量](assets/account-usage.png)
+
+**选项** —— 用本账户提供 `web_search`、自动创建与同步、切档后清理其他档位的路由、同步间隔：
+
+![选项](assets/options.png)
+
+**它出现在插件面板的「官方」组里**：
+
+![插件面板](assets/plugins-panel.png)
 
 ---
 
@@ -134,7 +168,10 @@ dsh plugin --profile web add link:<本仓库根目录>
 ```
 github:Plocr/dsh-commandcode-goat
 https://github.com/Plocr/dsh-commandcode-goat
+https://github.com/Plocr/dsh-commandcode-goat/releases/latest/download/dsh-commandcode-goat.tgz
 ```
+
+第三行是附在 [Release](https://github.com/Plocr/dsh-commandcode-goat/releases) 上的预构建包；资产名固定为 `dsh-commandcode-goat.tgz`（不带版本号），所以 `latest/download/` 不会随下次发版失效。
 
 安装器接受的形式（`@deepseek-ai/dsh-plugin-manager` 的 `parseInstallSpec`）：`github:owner/repo` 之类的 git 简写、git 仓库 URL、`.tgz` / `.tar.gz` 压缩包（本地绝对路径或 http 地址）、本地绝对路径，以及 npm 上的包名。装完按提示重启，**改 bundle 成员不会热生效**。
 
@@ -477,6 +514,8 @@ threshold = min(window × 0.8, window − 保留输出 maxTokens − headroom 65
 ## English
 
 Publishes a **Command Code** subscription (Go / GOAT / Pro / Max) as DSH model providers, with account usage and web search on the same credential.
+
+Screenshots of the card, the routes it writes into **Settings → Models**, the usage dashboard and its options are in the [界面](#界面) section above; account and usage figures are redacted there.
 
 It owns no LLM adapter: it writes provider profiles into the first-party `llm-pi-ai` settings section, so streaming, tool calling, reasoning and image handling come from the adapter the harness already ships. Two upstream sources are joined — the live `GET /provider/v1/models` list, which states each model's supported endpoints and is therefore the routing truth, and the capability catalog embedded in the plan page, which states thinking, vision and minimum plan tier. A dead model list fails the sync; a dead catalog only degrades it. The catalog is read from the selected tier's own page, falling back to the GOAT page for Max, whose page publishes no catalog array.
 
